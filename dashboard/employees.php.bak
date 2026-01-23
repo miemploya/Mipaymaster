@@ -1,0 +1,791 @@
+<?php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+require_once '../includes/functions.php';
+require_login();
+
+$company_id = $_SESSION['company_id'];
+$success_msg = '';
+$error_msg = '';
+
+// --- ENSURE DATABASE MIGRATION (Columns & Tables) ---
+try {
+    // 1. Employees Columns
+    $cols = $pdo->query("SHOW COLUMNS FROM employees LIKE 'department'")->fetchAll();
+    if (count($cols) == 0) $pdo->exec("ALTER TABLE employees ADD COLUMN department VARCHAR(100) DEFAULT NULL AFTER email");
+    
+    $cols = $pdo->query("SHOW COLUMNS FROM employees LIKE 'job_title'")->fetchAll();
+    if (count($cols) == 0) $pdo->exec("ALTER TABLE employees ADD COLUMN job_title VARCHAR(100) DEFAULT NULL AFTER department");
+    
+    $cols = $pdo->query("SHOW COLUMNS FROM employees LIKE 'photo_path'")->fetchAll();
+    if (count($cols) == 0) $pdo->exec("ALTER TABLE employees ADD COLUMN photo_path VARCHAR(255) DEFAULT NULL");
+    
+    $cols = $pdo->query("SHOW COLUMNS FROM employees LIKE 'id_document_path'")->fetchAll();
+    if (count($cols) == 0) $pdo->exec("ALTER TABLE employees ADD COLUMN id_document_path VARCHAR(255) DEFAULT NULL");
+
+    // 2. New Sub-tables for extended info
+    $pdo->exec("CREATE TABLE IF NOT EXISTS employee_education (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        employee_id INT NOT NULL,
+        institution VARCHAR(255),
+        qualification VARCHAR(100),
+        year INT,
+        course VARCHAR(255),
+        certificate_path VARCHAR(255) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX(employee_id)
+    )");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS employee_work_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        employee_id INT NOT NULL,
+        employer VARCHAR(255),
+        role VARCHAR(255),
+        duration VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX(employee_id)
+    )");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS employee_guarantors (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        employee_id INT NOT NULL,
+        full_name VARCHAR(255),
+        relationship VARCHAR(100),
+        phone VARCHAR(50),
+        address TEXT,
+        occupation VARCHAR(255),
+        id_path VARCHAR(255) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX(employee_id)
+    )");
+
+} catch (Exception $e) { /* ignore */ }
+
+
+// --- UPLOAD HELPER ---
+function upload_file($file_array, $key = null, $folder = 'uploads') {
+    $target_dir = "../" . $folder . "/";
+    if (!file_exists($target_dir)) mkdir($target_dir, 0777, true);
+    
+    // Check if it's a simple file or array file
+    if ($key !== null) {
+        // Array upload handling (e.g., edu_certificate[0])
+        if (!isset($file_array['name'][$key]) || $file_array['error'][$key] != 0) return null;
+        $name = $file_array['name'][$key];
+        $tmp = $file_array['tmp_name'][$key];
+    } else {
+        // Simple upload
+        if (!isset($file_array['name']) || $file_array['error'] != 0) return null;
+        $name = $file_array['name'];
+        $tmp = $file_array['tmp_name'];
+    }
+
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    $allowed = ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'];
+    if (!in_array($ext, $allowed)) return null;
+
+    $new_name = uniqid() . '.' . $ext;
+    $target_file = $target_dir . $new_name;
+
+    if (move_uploaded_file($tmp, $target_file)) {
+        return $folder . "/" . $new_name;
+    }
+    return null;
+}
+
+
+// --- HANDLE FORM SUBMISSION (Add/Edit) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    $first_name = clean_input($_POST['first_name']);
+    $last_name = clean_input($_POST['last_name']);
+    $email = clean_input($_POST['email']);
+    
+    if($first_name && $last_name && $email) {
+        try {
+            $pdo->beginTransaction();
+
+            // ID Upload
+            $id_doc_path = null;
+            if(isset($_FILES['id_document'])) {
+                $id_doc_path = upload_file($_FILES['id_document'], null, 'uploads/documents');
+            }
+
+            // Fields
+            $phone = clean_input($_POST['phone']);
+            $gender = clean_input($_POST['gender']);
+            $dob = $_POST['dob'] ?? null;
+            $address = clean_input($_POST['address']);
+            $dept = clean_input($_POST['department']);
+            $title = clean_input($_POST['job_title']);
+            $status = clean_input($_POST['employment_status']);
+            $join_date = $_POST['date_of_joining'] ?? date('Y-m-d');
+            
+            $cat_id = !empty($_POST['salary_category_id']) ? $_POST['salary_category_id'] : null;
+            
+            $bank = clean_input($_POST['bank_name']);
+            $acc_num = clean_input($_POST['account_number']);
+            $acc_name = clean_input($_POST['account_name']);
+            
+            $has_pension = isset($_POST['has_pension']) ? 1 : 0;
+            $pfa = $has_pension ? clean_input($_POST['pension_pfa']) : null;
+            $rsa = $has_pension ? clean_input($_POST['pension_rsa']) : null;
+
+            $payroll_id = 'MIP-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
+
+            // Insert Employee
+            $stmt = $pdo->prepare("INSERT INTO employees 
+                (company_id, payroll_id, first_name, last_name, email, phone, gender, dob, address, department, job_title, 
+                salary_category_id, employment_status, date_of_joining, bank_name, account_number, account_name, pension_pfa, pension_rsa, id_document_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $company_id, $payroll_id, $first_name, $last_name, $email, $phone, $gender, $dob, $address, $dept, $title,
+                $cat_id, $status, $join_date, $bank, $acc_num, $acc_name, $pfa, $rsa, $id_doc_path
+            ]);
+            $emp_id = $pdo->lastInsertId();
+            
+            // Insert Education
+            if(isset($_POST['edu_institution'])) {
+                $stmt = $pdo->prepare("INSERT INTO employee_education (employee_id, institution, qualification, year, course, certificate_path) VALUES (?, ?, ?, ?, ?, ?)");
+                foreach($_POST['edu_institution'] as $k => $inst) {
+                    if(!empty($inst)) {
+                        $cert_path = null;
+                        if(isset($_FILES['edu_certificate'])) {
+                            $cert_path = upload_file($_FILES['edu_certificate'], $k, 'uploads/certificates');
+                        }
+                        $stmt->execute([$emp_id, $inst, $_POST['edu_qualification'][$k], (int)$_POST['edu_year'][$k], $_POST['edu_course'][$k], $cert_path]);
+                    }
+                }
+            }
+
+            // Insert Work History
+            if(isset($_POST['work_employer'])) {
+                $stmt = $pdo->prepare("INSERT INTO employee_work_history (employee_id, employer, role, duration) VALUES (?, ?, ?, ?)");
+                foreach($_POST['work_employer'] as $k => $emp) {
+                    if(!empty($emp)) {
+                        $stmt->execute([$emp_id, $emp, $_POST['work_role'][$k], $_POST['work_duration'][$k]]);
+                    }
+                }
+            }
+
+            // Insert Guarantors
+            if(isset($_POST['guarantor_name'])) {
+                $stmt = $pdo->prepare("INSERT INTO employee_guarantors (employee_id, full_name, relationship, phone, address, occupation, id_path) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                foreach($_POST['guarantor_name'] as $k => $name) {
+                    if(!empty($name)) {
+                        $gid_path = null;
+                        if(isset($_FILES['guarantor_id'])) {
+                            $gid_path = upload_file($_FILES['guarantor_id'], $k, 'uploads/guarantors');
+                        }
+                        $stmt->execute([$emp_id, $name, $_POST['guarantor_rel'][$k], $_POST['guarantor_phone'][$k], $_POST['guarantor_address'][$k], $_POST['guarantor_job'][$k], $gid_path]);
+                    }
+                }
+            }
+
+            // Next of Kin
+            if(!empty($_POST['nok_name'])) {
+                $stmt = $pdo->prepare("INSERT INTO next_of_kin (employee_id, full_name, relationship, phone, address) VALUES (?, ?, ?, ?, ?)");
+                $stmt->execute([$emp_id, clean_input($_POST['nok_name']), clean_input($_POST['nok_relationship']), clean_input($_POST['nok_phone']), clean_input($_POST['nok_address'])]);
+            }
+
+            $pdo->commit();
+            $success_msg = "Employee Onboarded Successfully.";
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $error_msg = "Database Error: " . $e->getMessage();
+        }
+    }
+}
+
+// --- FETCH DATA FOR JSON ---
+// 1. Categories
+$categories_json = '[]';
+try {
+    $stmt = $pdo->prepare("SELECT id, name, base_gross_amount, basic_perc, housing_perc, transport_perc, other_perc FROM salary_categories WHERE company_id = ?");
+    $stmt->execute([$company_id]);
+    $cats = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if($cats) {
+        $categories_json = json_encode(array_map(function($c) {
+             return [
+                 'id' => $c['id'],
+                 'name' => $c['name'],
+                 'gross' => $c['base_gross_amount'],
+                 'struct' => [
+                     'basic' => $c['base_gross_amount'] * ($c['basic_perc']/100),
+                     'housing' => $c['base_gross_amount'] * ($c['housing_perc']/100),
+                     'transport' => $c['base_gross_amount'] * ($c['transport_perc']/100)
+                 ]
+             ];
+        }, $cats));
+    }
+} catch (Exception $e) {}
+
+// 2. Employees
+$employees_json = '[]';
+try {
+    $stmt = $pdo->prepare("SELECT e.*, s.name as salary_category_name, s.base_gross_amount 
+                           FROM employees e 
+                           LEFT JOIN salary_categories s ON e.salary_category_id = s.id 
+                           WHERE e.company_id = ? ORDER BY e.created_at DESC");
+    $stmt->execute([$company_id]);
+    $emps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if($emps) {
+        $employees_json = json_encode(array_map(function($e) {
+            return [
+                'id' => $e['payroll_id'] ?? 'N/A',
+                'name' => $e['first_name'] . ' ' . $e['last_name'],
+                'dept' => $e['department'] ?? 'Unassigned',
+                'role' => $e['job_title'] ?? 'Staff',
+                'category' => $e['salary_category_name'] ?? 'None',
+                'gross' => $e['base_gross_amount'] ?? 0,
+                'status' => $e['employment_status'],
+                'first_name' => $e['first_name'], // Details for profile
+                'last_name' => $e['last_name'],
+                'email' => $e['email'],
+                'phone' => $e['phone'],
+                'join_date' => $e['date_of_joining'],
+                'id_doc' => $e['id_document_path'],
+            ];
+        }, $emps));
+    }
+} catch (Exception $e) {}
+
+
+// Company Info for Sidebar
+$company_name = $_SESSION['company_name'] ?? 'My Company';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Employee Management - Mipaymaster</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            900: '#312e81',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        [x-cloak] { display: none !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .dark ::-webkit-scrollbar-thumb { background: #334155; }
+        .sidebar-transition { transition: width 0.3s ease-in-out, transform 0.3s ease-in-out, padding 0.3s; }
+        .form-input { @apply w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm; }
+        .form-label { @apply block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1; }
+        .step-active { @apply bg-brand-600 border-brand-600 text-white; }
+        .step-completed { @apply border-green-500 text-green-500 bg-white dark:bg-slate-900; }
+        .step-inactive { @apply border-slate-200 text-slate-400 bg-white dark:bg-slate-900 dark:border-slate-700; }
+        .toolbar-hidden { display: none; }
+        .toolbar-visible { display: block; }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 transition-colors duration-300 overflow-hidden">
+
+    <div class="flex h-screen w-full" x-data="{
+        view: 'list', 
+        currentStep: 1,
+        steps: ['Biodata', 'Salary', 'Bank', 'Education', 'Work History', 'Guarantor', 'NOK', 'Review'],
+        
+        employees: <?php echo htmlspecialchars($employees_json, ENT_QUOTES, 'UTF-8'); ?>,
+        categories: <?php echo htmlspecialchars($categories_json, ENT_QUOTES, 'UTF-8'); ?>,
+        
+        // Add Wizard State
+        selectedCategory: '',
+        selectedCatData: null,
+        hasPension: true,
+        
+        // Multi-row inputs
+        educations: [1],
+        works: [1],
+        guarantors: [1],
+        
+        // Profile View State
+        profileTab: 'overview',
+        currentProfile: null, // Employee object
+
+        getPageTitle() {
+            if(this.view === 'list') return 'Employees';
+            if(this.view === 'add') return 'Add New Employee';
+            if(this.view === 'profile') return 'Employee Profile';
+        },
+        
+        openProfile(emp) {
+            this.currentProfile = emp;
+            this.view = 'profile';
+        },
+
+        watchCategory() {
+            // Find full cat object
+            this.selectedCatData = this.categories.find(c => c.id == this.selectedCategory);
+        },
+        
+        addEducation() { this.educations.push(this.educations.length + 1); },
+        addWork() { this.works.push(this.works.length + 1); },
+        addGuarantor() { this.guarantors.push(this.guarantors.length + 1); },
+
+        init() {
+            setTimeout(() => lucide.createIcons(), 50);
+            this.$watch('view', () => setTimeout(() => lucide.createIcons(), 50));
+            this.$watch('currentStep', () => setTimeout(() => lucide.createIcons(), 50));
+            
+            // Check theme
+            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            }
+        }
+    }">
+
+        <!-- SIDEBAR -->
+        <!-- A. LEFT SIDEBAR -->
+        <!-- A. LEFT SIDEBAR -->
+        <?php $current_page = 'employees'; include '../includes/dashboard_sidebar.php'; ?>
+
+        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) -->
+        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
+            <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
+                <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+            <div class="p-4 space-y-4 overflow-y-auto h-[calc(100vh-64px)]">
+                <div class="p-3 bg-brand-50 dark:bg-brand-900/10 rounded-lg border-l-4 border-brand-500">
+                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Payroll Completed</p>
+                    <p class="text-xs text-slate-600 dark:text-slate-400">January 2026 payroll has been processed successfully.</p>
+                    <div class="mt-2 flex gap-2">
+                        <button class="text-xs text-brand-600 font-medium hover:underline">View</button>
+                    </div>
+                </div>
+                <div class="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800">
+                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Approval Required</p>
+                    <p class="text-xs text-slate-600 dark:text-slate-400">2 leave requests are pending your approval.</p>
+                    <div class="mt-2 flex gap-2">
+                        <button class="text-xs text-brand-600 font-medium hover:underline">Review</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Overlay -->
+        <div id="overlay" class="fixed inset-0 bg-black/50 z-30 hidden"></div>
+
+        <!-- MAIN CONTENT -->
+        <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
+            
+            <!-- Header -->
+            <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
+                <div class="flex items-center gap-4">
+                    <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+                        <i data-lucide="menu" class="w-6 h-6"></i>
+                    </button>
+                    <h2 class="text-xl font-bold text-slate-800 dark:text-white" x-text="getPageTitle()">Employees</h2>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
+                        <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
+                        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+                    </button>
+                    <button class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
+                        <i data-lucide="help-circle" class="w-5 h-5"></i>
+                    </button>
+                    <button id="notif-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors relative">
+                        <i data-lucide="bell" class="w-5 h-5"></i>
+                        <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-950"></span>
+                    </button>
+                    <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
+                    <!-- User Avatar -->
+                    <div x-data="{ open: false }" class="relative">
+                        <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
+                            <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
+                                <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
+                            </div>
+                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
+                        </button>
+                        <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50 mr-4" style="display: none;">
+                            <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-700">
+                                <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
+                                <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
+                            </div>
+                            <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Collapsed Toolbar -->
+            <div id="collapsed-toolbar" class="toolbar-hidden bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 z-20">
+                <button id="sidebar-expand-bar-btn" class="flex items-center gap-2 p-2 rounded-lg text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors my-1">
+                    <i data-lucide="menu" class="w-5 h-5"></i> <span class="text-sm font-medium">Show Menu</span>
+                </button>
+            </div>
+
+            <main class="flex-1 overflow-y-auto p-6 lg:p-8 bg-slate-50 dark:bg-slate-900">
+                <?php if ($success_msg): ?>
+                    <div class="mb-6 p-4 rounded-lg bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800"><?php echo $success_msg; ?></div>
+                <?php endif; ?>
+                <?php if ($error_msg): ?>
+                    <div class="mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800"><?php echo $error_msg; ?></div>
+                <?php endif; ?>
+
+                <!-- VIEW 1: LIST -->
+                <div x-show="view === 'list'" x-transition.opacity>
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                        <div class="flex items-center gap-2 bg-white dark:bg-slate-950 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 w-full md:w-auto">
+                            <i data-lucide="search" class="w-4 h-4 text-slate-400"></i>
+                            <input type="text" placeholder="Search..." class="bg-transparent text-sm focus:outline-none text-slate-900 dark:text-white w-full">
+                        </div>
+                        <button @click="view = 'add'" class="flex items-center gap-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 rounded-lg text-sm font-bold hover:opacity-90 transition-opacity">
+                            <i data-lucide="plus" class="w-4 h-4"></i> Add Employee
+                        </button>
+                    </div>
+
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                        <table class="w-full text-left text-sm">
+                             <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                                <tr>
+                                    <th class="px-6 py-3 font-medium">Payroll ID</th>
+                                    <th class="px-6 py-3 font-medium">Employee Name</th>
+                                    <th class="px-6 py-3 font-medium hidden md:table-cell">Dept</th>
+                                    <th class="px-6 py-3 font-medium text-right">Gross Salary</th>
+                                    <th class="px-6 py-3 font-medium text-center">Status</th>
+                                    <th class="px-6 py-3 font-medium text-center">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                <template x-for="emp in employees" :key="emp.id">
+                                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors cursor-pointer" @click="openProfile(emp)">
+                                        <td class="px-6 py-4 font-mono text-slate-500" x-text="emp.id"></td>
+                                        <td class="px-6 py-4 font-medium text-slate-900 dark:text-white" x-text="emp.name"></td>
+                                        <td class="px-6 py-4 hidden md:table-cell text-slate-500" x-text="emp.dept"></td>
+                                        <td class="px-6 py-4 text-right font-medium text-slate-900 dark:text-white" x-text="'₦ ' + Number(emp.gross).toLocaleString()"></td>
+                                        <td class="px-6 py-4 text-center">
+                                            <span :class="{
+                                                'bg-green-100 text-green-700': emp.status === 'Full Time',
+                                                'bg-amber-100 text-amber-700': emp.status === 'Contract',
+                                                'bg-blue-100 text-blue-700': emp.status === 'Intern'
+                                            }" class="px-2 py-1 rounded-full text-xs font-bold" x-text="emp.status"></span>
+                                        </td>
+                                        <td class="px-6 py-4 text-center">
+                                            <button class="text-brand-600 hover:underline">View</button>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="employees.length === 0">
+                                    <td colspan="6" class="px-6 py-8 text-center text-slate-500">No employees found.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- VIEW 2: ADD WIZARD -->
+                <div x-show="view === 'add'" x-cloak class="max-w-4xl mx-auto">
+                    <!-- Wizard Steps Header -->
+                    <div class="flex justify-between items-center mb-8 overflow-x-auto pb-2 scrollbar-hide">
+                        <template x-for="(stepName, index) in steps" :key="index">
+                            <div class="flex items-center min-w-max mr-4">
+                                <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors"
+                                     :class="{
+                                        'step-active': currentStep === index + 1,
+                                        'step-completed': currentStep > index + 1,
+                                        'step-inactive': currentStep < index + 1
+                                     }">
+                                    <span x-show="currentStep <= index + 1" x-text="index + 1"></span>
+                                    <i x-show="currentStep > index + 1" data-lucide="check" class="w-4 h-4"></i>
+                                </div>
+                                <span class="ml-2 text-sm font-medium" :class="currentStep === index + 1 ? 'text-brand-600 dark:text-brand-400' : 'text-slate-500'" x-text="stepName"></span>
+                            </div>
+                        </template>
+                    </div>
+
+                    <form method="POST" enctype="multipart/form-data" class="bg-white dark:bg-slate-950 rounded-xl shadow-lg border border-slate-200 dark:border-slate-800 p-8">
+                        
+                        <!-- STEP 1: BIODATA -->
+                        <div x-show="currentStep === 1">
+                            <h3 class="text-lg font-bold mb-6">Biodata</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div><label class="form-label">First Name</label><input type="text" name="first_name" class="form-input" required></div>
+                                <div><label class="form-label">Last Name</label><input type="text" name="last_name" class="form-input" required></div>
+                                <div><label class="form-label">Email</label><input type="email" name="email" class="form-input" required></div>
+                                <div><label class="form-label">Phone</label><input type="tel" name="phone" class="form-input"></div>
+                                <div><label class="form-label">Gender</label><select name="gender" class="form-input"><option>Male</option><option>Female</option></select></div>
+                                <div><label class="form-label">DOB</label><input type="date" name="dob" class="form-input"></div>
+                                <div><label class="form-label">Department</label><select name="department" class="form-input"><option>Engineering</option><option>Sales</option><option>Marketing</option><option>HR</option></select></div>
+                                <div><label class="form-label">Job Title</label><input type="text" name="job_title" class="form-input"></div>
+                                <div class="col-span-2"><label class="form-label">Address</label><input type="text" name="address" class="form-input"></div>
+                                <div><label class="form-label">Join Date</label><input type="date" name="date_of_joining" class="form-input"></div>
+                                <div><label class="form-label">Status</label><select name="employment_status" class="form-input"><option>Full Time</option><option>Contract</option><option>Intern</option></select></div>
+                                <div class="col-span-2">
+                                    <label class="form-label">ID Document (Upload)</label>
+                                    <input type="file" name="id_document" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- STEP 2: SALARY -->
+                        <div x-show="currentStep === 2">
+                            <h3 class="text-lg font-bold mb-6">Salary & Category</h3>
+                            <div class="space-y-6 max-w-2xl">
+                                <div>
+                                    <label class="form-label">Salary Category</label>
+                                    <select name="salary_category_id" x-model="selectedCategory" @change="watchCategory()" class="form-input">
+                                        <option value="">Select Category...</option>
+                                        <template x-for="cat in categories" :key="cat.id">
+                                            <option :value="cat.id" x-text="cat.name"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                                <div x-show="selectedCatData" class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border-2 border-dashed border-slate-200 dark:border-slate-800">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <span class="text-sm font-bold text-slate-500">Gross Salary</span>
+                                        <span class="text-lg font-bold text-slate-900 dark:text-white" x-text="'₦ ' + Number(selectedCatData?.gross || 0).toLocaleString()"></span>
+                                    </div>
+                                    <div class="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+                                        <div class="flex justify-between"><span>Basic</span><span x-text="'₦ ' + Number(selectedCatData?.struct.basic || 0).toLocaleString()"></span></div>
+                                        <div class="flex justify-between"><span>Housing</span><span x-text="'₦ ' + Number(selectedCatData?.struct.housing || 0).toLocaleString()"></span></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- STEP 3: BANK -->
+                        <div x-show="currentStep === 3">
+                            <h3 class="text-lg font-bold mb-6">Bank & Pension</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div><label class="form-label">Bank Name</label><input type="text" name="bank_name" class="form-input"></div>
+                                <div><label class="form-label">Account Number</label><input type="text" name="account_number" class="form-input"></div>
+                                <div class="col-span-2"><label class="form-label">Account Name</label><input type="text" name="account_name" class="form-input"></div>
+                                <div class="col-span-2 pt-4 border-t border-slate-100 dark:border-slate-700">
+                                    <label class="flex items-center gap-2 mb-4">
+                                        <span class="text-sm font-medium">Enable Pension?</span>
+                                        <input type="checkbox" name="has_pension" x-model="hasPension" class="w-5 h-5 text-brand-600 rounded">
+                                    </label>
+                                    <div x-show="hasPension" class="grid grid-cols-2 gap-6">
+                                        <div><label class="form-label">PFA</label><input type="text" name="pension_pfa" class="form-input" placeholder="e.g. Stanbic"></div>
+                                        <div><label class="form-label">RSA</label><input type="text" name="pension_rsa" class="form-input"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- STEP 4: EDUCATIONAL HISTORY -->
+                        <div x-show="currentStep === 4">
+                            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-6">Educational History</h3>
+                            <div class="space-y-6">
+                                <template x-for="(edu, index) in educations" :key="index">
+                                    <div class="p-4 border border-slate-200 dark:border-slate-700 rounded-lg relative">
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div class="col-span-2"><label class="form-label">Institution Name</label><input type="text" name="edu_institution[]" class="form-input"></div>
+                                            <div><label class="form-label">Qualification</label><select name="edu_qualification[]" class="form-input"><option>B.Sc</option><option>M.Sc</option><option>HND</option><option>OND</option><option>SSCE</option></select></div>
+                                            <div><label class="form-label">Year</label><input type="number" name="edu_year[]" class="form-input"></div>
+                                            <div class="col-span-2"><label class="form-label">Course</label><input type="text" name="edu_course[]" class="form-input"></div>
+                                            <div class="col-span-2">
+                                                <label class="form-label">Certificate (Upload)</label>
+                                                <input type="file" name="edu_certificate[]" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <button type="button" @click="addEducation()" class="w-full py-2 border-2 border-dashed border-slate-300 dark:border-slate-700 text-slate-500 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors flex items-center justify-center gap-2">
+                                    <i data-lucide="plus" class="w-4 h-4"></i> Add Another Education
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- STEP 5: WORK HISTORY -->
+                        <div x-show="currentStep === 5">
+                            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-6">Work History</h3>
+                            <div class="space-y-6">
+                                <template x-for="(work, index) in works" :key="index">
+                                    <div class="p-4 border border-slate-200 dark:border-slate-700 rounded-lg relative">
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div class="col-span-2"><label class="form-label">Employer Name</label><input type="text" name="work_employer[]" class="form-input"></div>
+                                            <div><label class="form-label">Job Title</label><input type="text" name="work_role[]" class="form-input"></div>
+                                            <div><label class="form-label">Duration</label><input type="text" name="work_duration[]" placeholder="e.g. 2019-2023" class="form-input"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <button type="button" @click="addWork()" class="w-full py-2 border-2 border-dashed border-slate-300 dark:border-slate-700 text-slate-500 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors flex items-center justify-center gap-2">
+                                    <i data-lucide="plus" class="w-4 h-4"></i> Add Another Job
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- STEP 6: GUARANTOR -->
+                        <div x-show="currentStep === 6">
+                            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-6">Guarantor Details</h3>
+                            <div class="space-y-6">
+                                <template x-for="(guarantor, index) in guarantors" :key="index">
+                                    <div class="p-4 border border-slate-200 dark:border-slate-700 rounded-lg relative">
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div class="col-span-2"><label class="form-label">Full Name</label><input type="text" name="guarantor_name[]" class="form-input"></div>
+                                            <div><label class="form-label">Relationship</label><input type="text" name="guarantor_rel[]" class="form-input"></div>
+                                            <div><label class="form-label">Phone</label><input type="tel" name="guarantor_phone[]" class="form-input"></div>
+                                            <div class="col-span-2"><label class="form-label">Address</label><input type="text" name="guarantor_address[]" class="form-input"></div>
+                                            <div class="col-span-2"><label class="form-label">Occupation</label><input type="text" name="guarantor_job[]" class="form-input"></div>
+                                            <div class="col-span-2">
+                                                <label class="form-label">Guarantor ID (Upload)</label>
+                                                <input type="file" name="guarantor_id[]" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <button type="button" @click="addGuarantor()" class="w-full py-2 border-2 border-dashed border-slate-300 dark:border-slate-700 text-slate-500 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors flex items-center justify-center gap-2">
+                                    <i data-lucide="plus" class="w-4 h-4"></i> Add Another Guarantor
+                                </button>
+                            </div>
+                        </div>
+
+                         <!-- STEP 7: NOK -->
+                        <div x-show="currentStep === 7">
+                            <h3 class="text-lg font-bold mb-6">Next of Kin</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div><label class="form-label">Full Name</label><input type="text" name="nok_name" class="form-input"></div>
+                                <div><label class="form-label">Relationship</label><input type="text" name="nok_relationship" class="form-input"></div>
+                                <div><label class="form-label">Phone</label><input type="tel" name="nok_phone" class="form-input"></div>
+                                <div><label class="form-label">Address</label><input type="text" name="nok_address" class="form-input"></div>
+                            </div>
+                        </div>
+
+                        <!-- STEP 8: REVIEW -->
+                        <div x-show="currentStep === 8">
+                            <h3 class="text-lg font-bold mb-6">Review & Activate</h3>
+                            <p class="text-sm text-slate-500 mb-6">Please check all details before saving.</p>
+                            <button type="submit" class="w-full py-3 bg-brand-600 text-white rounded-lg font-bold shadow-lg hover:bg-brand-700">Complete Onboarding</button>
+                        </div>
+
+                        <!-- CONTROLS -->
+                        <div class="mt-8 flex justify-between pt-6 border-t border-slate-100 dark:border-slate-800">
+                            <button type="button" x-show="currentStep > 1" @click="currentStep--" class="px-6 py-2 border rounded-lg">Previous</button>
+                            <div class="flex-1"></div>
+                            <button type="button" x-show="currentStep < 8" @click="currentStep++" class="px-6 py-2 bg-slate-900 text-white rounded-lg">Next Step</button>
+                        </div>
+                    </form>
+                </div>
+                
+                <!-- VIEW 3: PROFILE -->
+                <div x-show="view === 'profile'" x-cloak>
+                    <button @click="view = 'list'" class="mb-6 flex items-center gap-2 text-sm text-brand-600"><i data-lucide="arrow-left" class="w-4 h-4"></i> Back</button>
+                    <!-- Header -->
+                    <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 mb-6 flex gap-6">
+                        <div class="w-20 h-20 bg-slate-200 rounded-full flex items-center justify-center font-bold text-2xl" x-text="currentProfile?.first_name[0]"></div>
+                        <div>
+                            <h2 class="text-2xl font-bold" x-text="currentProfile?.name"></h2>
+                            <p class="text-slate-500" x-text="(currentProfile?.role || 'Staff') + ' • ' + (currentProfile?.dept || 'General')"></p>
+                            <div class="mt-2"><span class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full" x-text="currentProfile?.status"></span></div>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+        </div>
+    </div>
+    
+    <script>
+        lucide.createIcons();
+        const themeBtn = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            html.classList.add('dark');
+        } else {
+            html.classList.remove('dark');
+        }
+        if(themeBtn) {
+            themeBtn.addEventListener('click', () => {
+                html.classList.toggle('dark');
+                localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
+            });
+        }
+        
+        // Sidebar Logic
+        const mobileToggle = document.getElementById('mobile-sidebar-toggle');
+        const sidebar = document.getElementById('sidebar');
+        const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
+        const sidebarExpandBtn = document.getElementById('sidebar-expand-bar-btn');
+        const collapsedToolbar = document.getElementById('collapsed-toolbar');
+
+
+
+        // Notification Logic
+        const notifToggle = document.getElementById('notif-toggle');
+        const notifClose = document.getElementById('notif-close');
+        const notifPanel = document.getElementById('notif-panel');
+        const overlay = document.getElementById('overlay');
+
+        function toggleOverlay(show) {
+            if (show) overlay.classList.remove('hidden');
+            else overlay.classList.add('hidden');
+        }
+
+        if(notifToggle) {
+            notifToggle.addEventListener('click', () => {
+                notifPanel.classList.remove('translate-x-full');
+                toggleOverlay(true);
+            });
+        }
+
+        if(notifClose) {
+            notifClose.addEventListener('click', () => {
+                notifPanel.classList.add('translate-x-full');
+                toggleOverlay(false);
+            });
+        }
+
+        if(overlay) {
+            overlay.addEventListener('click', () => {
+                notifPanel.classList.add('translate-x-full');
+                if(sidebar) sidebar.classList.add('-translate-x-full'); 
+                toggleOverlay(false);
+            });
+        }
+
+        if(mobileToggle) mobileToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('-translate-x-full');
+            if (!sidebar.classList.contains('-translate-x-full')) {
+                toggleOverlay(true);
+            } else {
+                toggleOverlay(false);
+            }
+        });
+
+        function toggleSidebar() {
+            sidebar.classList.toggle('w-64');
+            sidebar.classList.toggle('w-0');
+            sidebar.classList.toggle('p-0'); 
+            if (sidebar.classList.contains('w-0')) {
+                if(collapsedToolbar) { collapsedToolbar.classList.remove('toolbar-hidden'); collapsedToolbar.classList.add('toolbar-visible'); }
+            } else {
+                if(collapsedToolbar) { collapsedToolbar.classList.add('toolbar-hidden'); collapsedToolbar.classList.remove('toolbar-visible'); }
+            }
+        }
+        if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
+        if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
+    </script>
+</body>
+</html>

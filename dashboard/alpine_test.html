@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Alpine Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body>
+    <h1>Alpine.js Test Page</h1>
+    
+    <div x-data="{ message: 'Alpine is working!' }">
+        <p x-text="message"></p>
+    </div>
+    
+    <hr>
+    
+    <div x-data="testComponent()">
+        <p>Current tab: <span x-text="currentTab"></span></p>
+        <button @click="currentTab = 'test1'">Test 1</button>
+        <button @click="currentTab = 'test2'">Test 2</button>
+        
+        <div x-show="currentTab === 'test1'">
+            <p>Test 1 content is showing!</p>
+        </div>
+        
+        <div x-show="currentTab === 'test2'">
+            <p>Test 2 content is showing!</p>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('testComponent', () => ({
+                currentTab: 'test1'
+            }));
+        });
+    </script>
+    
+    <hr>
+    <p>Check the console for errors (F12)</p>
+</body>
+</html>

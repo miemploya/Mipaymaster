@@ -1,0 +1,66 @@
+# Database connection files (contains sensitive credentials)
+includes/db_connect.php
+config/database.php
+
+# Session and temporary files
+*.tmp
+*.temp
+sessions/
+tmp/
+
+# Log files
+*.log
+logs/
+error_log
+
+# Uploaded files (consider what you want to track)
+uploads/*
+!uploads/.htaccess
+
+# Backup files
+backups/
+*.sql
+*.backup
+*.bak
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+nbproject/
+
+# Composer
+/vendor/
+composer.phar
+composer.lock
+
+# Node modules (if using any frontend build tools)
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-error.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Cache
+cache/
+*.cache
+
+.bin/
