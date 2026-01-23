@@ -7,8 +7,7 @@
         <h1 class="text-4xl md:text-5xl font-extrabold text-slate-900 dark:text-white mb-4">Get in touch</h1>
         <p class="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">Have questions about our pricing, features, or need a custom demo? We're here to help.</p>
     </section>
-
-    <!-- Content -->
+    
     <div class="max-w-7xl mx-auto px-4 py-16">
         <div class="flex flex-col lg:flex-row gap-12 lg:gap-24">
             
@@ -20,7 +19,7 @@
                     </h3>
                     <p class="text-slate-600 dark:text-slate-400 pl-7">
                         123 Innovation Drive,<br>
-                        Lagos, Nigeria.
+                        Lagos State, Nigeria.
                     </p>
                 </div>
                 
