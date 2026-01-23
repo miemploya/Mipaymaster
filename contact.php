@@ -19,7 +19,7 @@
                     </h3>
                     <p class="text-slate-600 dark:text-slate-400 pl-7">
                         123 Innovation Drive,<br>
-                        Lagos State, Nigeria.
+                        Lagos, Nigeria.
                     </p>
                 </div>
                 
