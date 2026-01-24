@@ -582,7 +582,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Update components
             $stmt = $pdo->prepare("UPDATE salary_components SET 
-                percentage=?, amount=?, is_taxable=?, is_pensionable=?, is_active=? 
+                percentage=?, amount=?, is_taxable=?, is_pensionable=?, 
+                is_active = CASE WHEN type IN ('basic','system') THEN 1 ELSE ? END
                 WHERE id=? AND company_id=?");
             
             foreach ($components as $comp) {
@@ -983,7 +984,7 @@ try {
 
             return [
                 'id' => (int)$c['id'],
-                'title' => $c['title'],
+                'title' => $c['name'],
                 'amount' => floatval($c['base_gross_amount']),
                 'active' => (bool)($c['is_active'] ?? 1),
                 'struct' => $struct
@@ -2051,7 +2052,7 @@ try {
                             </div>
 
                             <!-- 100% Validation Panel -->
-                            <div class="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+                            <div class="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
                                 <div class="flex items-center justify-between mb-2">
                                     <span class="text-sm font-medium text-slate-600 dark:text-slate-400">Total Allocated:</span>
                                     <span class="text-2xl font-bold" 
@@ -2070,118 +2071,150 @@ try {
                                     <span class="text-slate-600 dark:text-slate-400">
                                         Remaining: <strong x-text="totalRemaining.toFixed(2) + '%'"></strong>
                                     </span>
-                                    <span x-show="!canSave" class="text-red-600 dark:text-red-400 font-medium">
-                                        ⚠️ Must equal exactly 100%
+                                    <span x-show="!canSave" class="text-red-600 dark:text-red-400 font-medium flex items-center gap-1">
+                                        <i data-lucide="alert-circle" class="w-3 h-3"></i> Must equal exactly 100%
                                     </span>
-                                    <span x-show="canSave" class="text-green-600 dark:text-green-400 font-medium">
-                                        ✓ Valid structure
+                                    <span x-show="canSave" class="text-green-600 dark:text-green-400 font-medium flex items-center gap-1">
+                                        <i data-lucide="check-circle" class="w-3 h-3"></i> Valid structure
                                     </span>
                                 </div>
                             </div>
 
-                            <!-- Components Table -->
-                            <div class="overflow-x-auto">
-                                <table class="w-full text-sm">
-                                    <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-                                        <tr>
-                                            <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Component</th>
-                                            <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Method</th>
-                                            <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Value</th>
-                                            <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Tax</th>
-                                            <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Pension</th>
-                                            <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Active</th>
-                                            <th class="px-4 py-3 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                                        <template x-for="comp in salaryComponents" :key="comp.id">
-                                            <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
-                                                <!-- Name -->
-                                                <td class="px-4 py-3">
-                                                    <div class="flex flex-col">
-                                                        <span class="font-medium text-slate-900 dark:text-white" x-text="comp.name"></span>
-                                                        <span x-show="comp.system" class="inline-flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wider">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                                                            System
-                                                        </span>
-                                                    </div>
-                                                </td>
+                            <div class="p-6 space-y-8">
+                                <!-- SECTION 1: SYSTEM LOCKED COMPONENTS -->
+                                <div>
+                                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3 flex items-center gap-2">
+                                        <i data-lucide="lock" class="w-3 h-3"></i> System Structure (Mandatory)
+                                    </h4>
+                                    <div class="bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                                                <tr>
+                                                    <th class="px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-300">Component</th>
+                                                    <th class="px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-300">Percentage</th>
+                                                    <th class="px-4 py-3 text-center font-semibold text-slate-600 dark:text-slate-300">Settings</th>
+                                                    <th class="px-4 py-3 text-right font-semibold text-slate-600 dark:text-slate-300">Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                                <template x-for="comp in salaryComponents.filter(c => c.system)" :key="comp.id">
+                                                    <tr class="hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex items-center gap-2">
+                                                                <span class="font-bold text-slate-800 dark:text-slate-200" x-text="comp.name"></span>
+                                                                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">SYSTEM</span>
+                                                            </div>
+                                                            <div class="text-xs text-slate-400 mt-0.5">Basic Type: <span x-text="comp.base"></span></div>
+                                                        </td>
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex items-center gap-2">
+                                                                <input type="number" step="0.01" min="0" max="100" 
+                                                                    x-model.number="comp.percentage"
+                                                                    class="w-20 px-2 py-1.5 text-sm font-bold text-right border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                                                                <span class="font-bold text-slate-500">%</span>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-center">
+                                                            <div class="flex justify-center gap-2">
+                                                                <span class="px-2 py-1 rounded text-[10px] uppercase font-bold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="Taxable">Tax</span>
+                                                                <span class="px-2 py-1 rounded text-[10px] uppercase font-bold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="Pensionable">Pen</span>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-right">
+                                                            <span class="text-xs font-bold text-slate-400 flex items-center justify-end gap-1">
+                                                                <i data-lucide="shield" class="w-3 h-3"></i> Locked
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
 
-                                                <!-- Method -->
-                                                <td class="px-4 py-3">
-                                                    <span class="text-xs px-2 py-1 rounded-full capitalize"
-                                                          :class="comp.method === 'percentage' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400'"
-                                                          x-text="comp.method"></span>
-                                                </td>
-
-                                                <!-- Value (Percentage or Amount) -->
-                                                <td class="px-4 py-3">
-                                                    <div class="flex items-center gap-1">
-                                                        <input x-show="comp.method === 'percentage'" 
-                                                               type="number" step="0.01" min="0" max="100"
-                                                               x-model.number="comp.percentage"
-                                                        class="w-24 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white dark:bg-slate-800">
-                                                        <span x-show="comp.method === 'percentage'" class="text-slate-400 text-xs">%</span>
-                                                               
-                                                        <input x-show="comp.method === 'fixed'" 
-                                                               type="number" step="0.01" min="0"
-                                                               x-model.number="comp.amount"
-                                                               class="w-32 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white dark:bg-slate-800">
-                                                        <span x-show="comp.method === 'fixed'" class="text-slate-400 text-xs">₦</span>
-                                                    </div>
-                                                </td>
-
-                                                <!-- Tax -->
-                                                <td class="px-4 py-3 text-center">
-                                                    <input type="checkbox" 
-                                                           x-model="comp.taxable"
-                                                           class="w-4 h-4 text-brand-600 rounded border-slate-300 dark:border-slate-600 focus:ring-brand-500">
-                                                </td>
-
-                                                <!-- Pension -->
-                                                <td class="px-4 py-3 text-center">
-                                                    <input type="checkbox" 
-                                                           x-model="comp.pensionable"
-                                                           class="w-4 h-4 text-brand-600 rounded border-slate-300 dark:border-slate-600 focus:ring-brand-500">
-                                                </td>
-
-                                                <!-- Active -->
-                                                <td class="px-4 py-3 text-center">
-                                                    <label class="relative inline-flex items-center cursor-pointer">
-                                                        <input type="checkbox" 
-                                                               x-model="comp.active" 
-                                                               :disabled="comp.type==='basic'"
-                                                               class="sr-only peer">
-                                                        <div class="w-9 h-5 bg-slate-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-600"
-                                                             :class="{'opacity-50 cursor-not-allowed': comp.type==='basic'}"></div>
-                                                    </label>
-                                                </td>
-                                                
-                                                <!-- Actions -->
-                                                <td class="px-4 py-3 text-right">
-                                                    <button @click="deleteComponent(comp.id)" 
-                                                            x-show="!comp.system"
-                                                            class="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
-                                                            title="Delete Allowance">
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        </template>
-                                    </tbody>
-                                </table>
+                                <!-- SECTION 2: ADDITIONAL ALLOWANCES -->
+                                <div>
+                                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3 flex items-center gap-2">
+                                        <i data-lucide="layers" class="w-3 h-3"></i> Additional Allowances
+                                    </h4>
+                                    <div class="bg-white dark:bg-slate-950 rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+                                                <tr>
+                                                    <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Component</th>
+                                                    <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Value</th>
+                                                    <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Options</th>
+                                                    <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Active</th>
+                                                    <th class="px-4 py-3 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                                <template x-for="comp in salaryComponents.filter(c => !c.system)" :key="comp.id">
+                                                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
+                                                        <td class="px-4 py-3">
+                                                            <div class="font-medium text-slate-900 dark:text-white" x-text="comp.name"></div>
+                                                            <div class="text-xs text-slate-500" x-text="comp.method"></div>
+                                                        </td>
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex items-center gap-1">
+                                                                <input x-show="comp.method === 'percentage'" 
+                                                                       type="number" step="0.01" min="0" max="100"
+                                                                       x-model.number="comp.percentage"
+                                                                       class="w-20 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white dark:bg-slate-800">
+                                                                <span x-show="comp.method === 'percentage'" class="text-slate-400 text-xs">%</span>
+                                                                       
+                                                                <input x-show="comp.method === 'fixed'" 
+                                                                       type="number" step="0.01" min="0"
+                                                                       x-model.number="comp.amount"
+                                                                       class="w-24 px-2 py-1 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white dark:bg-slate-800">
+                                                                <span x-show="comp.method === 'fixed'" class="text-slate-400 text-xs">₦</span>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-center">
+                                                            <div class="flex justify-center gap-3">
+                                                                <label class="flex items-center gap-1 text-xs cursor-pointer" title="Taxable">
+                                                                    <input type="checkbox" x-model="comp.taxable" class="rounded text-brand-600 focus:ring-0 w-3.5 h-3.5"> Tax
+                                                                </label>
+                                                                <label class="flex items-center gap-1 text-xs cursor-pointer" title="Pensionable">
+                                                                    <input type="checkbox" x-model="comp.pensionable" class="rounded text-brand-600 focus:ring-0 w-3.5 h-3.5"> Pen
+                                                                </label>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-center">
+                                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                                <input type="checkbox" x-model="comp.active" class="sr-only peer">
+                                                                <div class="w-9 h-5 bg-slate-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-600"></div>
+                                                            </label>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-right">
+                                                            <button @click="deleteComponent(comp.id)" class="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors" title="Delete Allowance">
+                                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                                <tr x-show="salaryComponents.filter(c => !c.system).length === 0">
+                                                    <td colspan="5" class="py-6 text-center text-slate-500 text-xs italic">
+                                                        No additional allowances added.
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Save Button -->
-                            <div class="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3">
+                            <div class="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3 sticky bottom-0 z-10">
                                 <button type="button" @click="saveAllComponents()" 
                                         :disabled="!canSave || componentsSaving"
-                                        :class="canSave && !componentsSaving ? 'bg-brand-600 hover:bg-brand-700' : 'bg-gray-300 dark:bg-gray-700 cursor-not-allowed'"
-                                        class="px-6 py-2.5 text-white rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2">
+                                        :class="canSave && !componentsSaving ? 'bg-brand-600 hover:bg-brand-700 shadow-brand-500/20' : 'bg-gray-300 dark:bg-gray-700 cursor-not-allowed text-slate-100'"
+                                        class="px-6 py-2.5 text-white rounded-lg font-bold transition-all shadow-lg flex items-center gap-2">
                                     <svg x-show="componentsSaving" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                     </svg>
+                                    <i x-show="!componentsSaving && canSave" data-lucide="save" class="w-4 h-4"></i>
                                     <span x-show="!componentsSaving">Save Structure</span>
                                     <span x-show="componentsSaving">Saving...</span>
                                 </button>

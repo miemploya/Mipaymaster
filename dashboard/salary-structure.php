@@ -6,45 +6,127 @@ $company_id = $_SESSION['company_id'];
 $success_msg = '';
 $error_msg = '';
 
-// Handle Add/Edit Category
+// --- HELPER: Ensure Default Components Exist for Company ---
+// This ensures that even if the migration didn't run perfect, the UI will force them into existence so they can be used.
+$defaults = [
+    ['name' => 'Basic Salary', 'type' => 'basic', 'default' => 40],
+    ['name' => 'Housing Allowance', 'type' => 'allowance', 'default' => 30],
+    ['name' => 'Transport Allowance', 'type' => 'allowance', 'default' => 20]
+];
+
+foreach ($defaults as $def) {
+    try {
+        $chk = $pdo->prepare("SELECT id FROM salary_components WHERE company_id=? AND name=?");
+        $chk->execute([$company_id, $def['name']]);
+        if ($chk->rowCount() == 0) {
+            $ins = $pdo->prepare("INSERT INTO salary_components (company_id, name, type, default_percentage, is_active, is_custom) VALUES (?, ?, ?, ?, 1, 0)");
+            $ins->execute([$company_id, $def['name'], $def['type'], $def['default']]);
+        }
+    } catch (Exception $e) {}
+}
+
+
+// --- HANDLE FORM SUBMISSIONS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action']) && $_POST['action'] === 'delete') {
         $id = $_POST['id'];
         $stmt = $pdo->prepare("DELETE FROM salary_categories WHERE id=? AND company_id=?");
         $stmt->execute([$id, $company_id]);
         $success_msg = "Category deleted.";
-    } else {
-        $name = clean_input($_POST['name']);
-        $gross = floatval($_POST['base_gross_amount']);
-        $basic_perc = floatval($_POST['basic_perc']);
-        $housing_perc = floatval($_POST['housing_perc']);
-        $transport_perc = floatval($_POST['transport_perc']);
-        $other_perc = floatval($_POST['other_perc']);
-        
-        // Validate total 100%
-        $total_perc = $basic_perc + $housing_perc + $transport_perc + $other_perc;
-        if (abs($total_perc - 100) > 0.01) {
-            $error_msg = "Total percentage must equal 100%. Current total: $total_perc%";
-        } else {
-            if (isset($_POST['id']) && !empty($_POST['id'])) {
-                // Update
-                $stmt = $pdo->prepare("UPDATE salary_categories SET name=?, base_gross_amount=?, basic_perc=?, housing_perc=?, transport_perc=?, other_perc=? WHERE id=? AND company_id=?");
-                $stmt->execute([$name, $gross, $basic_perc, $housing_perc, $transport_perc, $other_perc, $_POST['id'], $company_id]);
-                $success_msg = "Category updated successfully.";
-            } else {
-                // Create
-                $stmt = $pdo->prepare("INSERT INTO salary_categories (company_id, name, base_gross_amount, basic_perc, housing_perc, transport_perc, other_perc) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$company_id, $name, $gross, $basic_perc, $housing_perc, $transport_perc, $other_perc]);
-                $success_msg = "Category created successfully.";
+    } 
+    else {
+        // SAVE (Create/Update)
+        try {
+            $pdo->beginTransaction();
+
+            $name = clean_input($_POST['name']);
+            $gross = floatval($_POST['base_gross_amount']);
+            $percentages = $_POST['percentages'] ?? []; // Array [component_id => val]
+
+            // 1. Validate Total 100%
+            $total_perc = array_sum($percentages);
+            if (abs($total_perc - 100) > 0.01) {
+                throw new Exception("Total percentage must equal 100%. Current total: " . $total_perc . "%");
             }
+
+            // 2. Create/Update Category
+            $category_id = $_POST['id'] ?? null;
+            if ($category_id) {
+                $stmt = $pdo->prepare("UPDATE salary_categories SET name=?, base_gross_amount=? WHERE id=? AND company_id=?");
+                $stmt->execute([$name, $gross, $category_id, $company_id]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO salary_categories (company_id, name, base_gross_amount) VALUES (?, ?, ?)");
+                $stmt->execute([$company_id, $name, $gross]);
+                $category_id = $pdo->lastInsertId();
+            }
+
+            // 3. Save Breakdown (Delete old, Insert new)
+            $del = $pdo->prepare("DELETE FROM salary_category_breakdown WHERE category_id=?");
+            $del->execute([$category_id]);
+
+            $ins = $pdo->prepare("INSERT INTO salary_category_breakdown (category_id, salary_component_id, component_name, percentage) VALUES (?, ?, ?, ?)");
+            
+            // Get Component Names map
+            $comp_map = [];
+            $all_comps = $pdo->prepare("SELECT id, name FROM salary_components WHERE company_id=?");
+            $all_comps->execute([$company_id]);
+            while($c = $all_comps->fetch()){ $comp_map[$c['id']] = $c['name']; }
+
+            foreach ($percentages as $comp_id => $perc) {
+                $val = floatval($perc);
+                if ($val > 0) {
+                     // Verify component belongs to company or is system? (Schema has company_id on components, so yes)
+                     if (!isset($comp_map[$comp_id])) continue; 
+                     $ins->execute([$category_id, $comp_id, $comp_map[$comp_id], $val]);
+                }
+            }
+
+            $pdo->commit();
+            $success_msg = "Category saved successfully.";
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $error_msg = $e->getMessage();
         }
     }
 }
 
-// Fetch Categories
+// --- FETCH DATA ---
+
+// 1. Get Components (Active)
+$components = [];
+$stmt = $pdo->prepare("SELECT * FROM salary_components WHERE company_id = ? AND is_active = 1 ORDER BY type ASC, id ASC"); // Basic first usually
+$stmt->execute([$company_id]);
+$components = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Sort components: Basic first, then allowances
+usort($components, function($a, $b) {
+    // Priority: Basic (0), Allowance (1), Others (2)
+    $typeOrder = ['basic' => 0, 'allowance' => 1, 'system' => 2]; 
+    $orderA = $typeOrder[$a['type']] ?? 3;
+    $orderB = $typeOrder[$b['type']] ?? 3;
+    
+    if ($orderA !== $orderB) return $orderA - $orderB;
+    // Secondary sort: Custom is active=1, is_custom=0 first? "System Locked" usually implies specific IDs or Names.
+    // Let's just sort by ID after Type.
+    return $a['id'] - $b['id'];
+});
+
+
+// 2. Get Categories & Breakdowns
+$categories = [];
 $stmt = $pdo->prepare("SELECT * FROM salary_categories WHERE company_id = ? ORDER BY name ASC");
 $stmt->execute([$company_id]);
-$categories = $stmt->fetchAll();
+$raw_cats = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($raw_cats as $cat) {
+    // Fetch breakdown
+    $b_stmt = $pdo->prepare("SELECT * FROM salary_category_breakdown WHERE category_id = ?");
+    $b_stmt->execute([$cat['id']]);
+    $cat['breakdown'] = $b_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $categories[] = $cat;
+}
+
 
 $current_page = 'salary';
 ?>
@@ -54,165 +136,259 @@ $current_page = 'salary';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Salary Structure - MiPayMaster</title>
-    <link rel="stylesheet" href="../assets/css/style.css">
-    <link rel="stylesheet" href="../assets/css/dashboard.css">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        brand: { 50: '#eef2ff', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Alpine.js -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <style>
-        .salary-breakdown-preview {
-            background: #f1f5f9;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            font-size: 0.9rem;
-            margin-top: 1rem;
-        }
-        .breakdown-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.25rem 0;
-            border-bottom: 1px dashed #cbd5e1;
-        }
-        .breakdown-row:last-child { border-bottom: none; font-weight: 600; margin-top: 0.5rem; border-top: 2px solid #cbd5e1; padding-top: 0.5rem;}
+         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+         body { font-family: 'Inter', sans-serif; }
+         [x-cloak] { display: none !important; }
     </style>
 </head>
-<body>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans antialiased" x-data="salaryApp()">
 
-<div class="dashboard-layout">
+<div class="flex h-screen overflow-hidden">
+    <!-- Sidebar -->
     <?php include '../includes/dashboard_sidebar.php'; ?>
 
-    <main class="main-content">
-        <?php 
-        $page_title = "Salary Structure";
-        include '../includes/dashboard_header.php'; 
-        ?>
+    <!-- Main -->
+    <main class="flex-1 flex flex-col h-full overflow-hidden relative">
+        <!-- Header -->
+         <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
+            <div class="flex items-center gap-4">
+                 <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
+                 <h2 class="text-xl font-bold text-slate-800 dark:text-white">Salary Structure</h2>
+            </div>
+             <?php include '../includes/hr_header.php'; ?>
+        </header>
 
-        <div class="container" style="padding-top: 2rem;">
+        <!-- Content -->
+        <div class="flex-1 overflow-y-auto p-6 lg:p-8">
             
             <?php if ($success_msg): ?>
-                <div class="alert alert-success"><?php echo $success_msg; ?></div>
+                <div class="mb-6 p-4 rounded-lg bg-green-50 text-green-700 border border-green-200 flex items-center gap-2"><i data-lucide="check-circle" class="w-5 h-5"></i> <?php echo $success_msg; ?></div>
             <?php endif; ?>
             <?php if ($error_msg): ?>
-                <div class="alert alert-error"><?php echo $error_msg; ?></div>
+                <div class="mb-6 p-4 rounded-lg bg-red-50 text-red-700 border border-red-200 flex items-center gap-2"><i data-lucide="alert-circle" class="w-5 h-5"></i> <?php echo $error_msg; ?></div>
             <?php endif; ?>
 
-            <div class="flex gap-4" style="align-items: flex-start;">
-                <!-- List Categories -->
-                <div class="card" style="flex: 2;">
-                    <h3>Salary Categories</h3>
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 1rem;">
-                        <thead>
-                            <tr style="text-align: left; border-bottom: 1px solid var(--border-color);">
-                                <th style="padding: 0.5rem;">Name</th>
-                                <th style="padding: 0.5rem;">Gross Pay</th>
-                                <th style="padding: 0.5rem;">Breakdown (%)</th>
-                                <th style="padding: 0.5rem;">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($categories as $cat): ?>
-                            <tr style="border-bottom: 1px solid var(--border-color);">
-                                <td style="padding: 0.75rem 0.5rem;"><?php echo htmlspecialchars($cat['name']); ?></td>
-                                <td style="padding: 0.75rem 0.5rem;"><?php echo number_format($cat['base_gross_amount'], 2); ?></td>
-                                <td style="padding: 0.75rem 0.5rem;">
-                                    B:<?php echo $cat['basic_perc']; ?>% | 
-                                    H:<?php echo $cat['housing_perc']; ?>% | 
-                                    T:<?php echo $cat['transport_perc']; ?>%
-                                </td>
-                                <td style="padding: 0.75rem 0.5rem;">
-                                    <button class="btn btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;" onclick='editCategory(<?php echo json_encode($cat); ?>)'>Edit</button>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
+            <div class="flex flex-col lg:flex-row gap-8 items-start">
+                
+                <!-- LIST CARD -->
+                <div class="flex-1 w-full bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+                        <h3 class="font-bold text-lg">Defined Categories</h3>
+                        <span class="text-xs font-mono bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-500"><?php echo count($categories); ?> Total</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 text-slate-500 uppercase tracking-wider">
+                                <tr>
+                                    <th class="p-4 font-semibold">Category Name</th>
+                                    <th class="p-4 font-semibold">Gross Pay</th>
+                                    <th class="p-4 font-semibold">Breakdown</th>
+                                    <th class="p-4 font-semibold text-right">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                <?php foreach ($categories as $cat): ?>
+                                <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors group">
+                                    <td class="p-4 font-medium text-slate-900 dark:text-white"><?php echo htmlspecialchars($cat['name']); ?></td>
+                                    <td class="p-4 font-mono text-slate-600 dark:text-slate-400">₦<?php echo number_format($cat['base_gross_amount'], 2); ?></td>
+                                    <td class="p-4">
+                                        <div class="flex flex-wrap gap-1">
+                                            <?php foreach ($cat['breakdown'] as $bd): ?>
+                                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
+                                                     <?php echo htmlspecialchars($bd['component_name']); ?>: <?php echo $bd['percentage']; ?>%
+                                                 </span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </td>
+                                    <td class="p-4 text-right">
+                                        <button @click="editCategory(<?php echo htmlspecialchars(json_encode($cat)); ?>)" class="text-brand-600 hover:text-brand-700 font-medium text-xs border border-brand-200 rounded px-3 py-1 bg-brand-50 hover:bg-brand-100 transition-colors">Edit</button>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if (empty($categories)): ?>
+                                    <tr><td colspan="4" class="p-8 text-center text-slate-500">No salary categories defined yet.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
-                <!-- Add/Edit Form -->
-                <div class="card" style="flex: 1.5; position: sticky; top: 100px;">
-                    <h3 id="formTitle">Add New Category</h3>
-                    <form method="POST" id="salaryForm">
-                        <input type="hidden" name="id" id="catId">
-                        
-                        <div class="form-group">
-                            <label class="form-label">Category Name</label>
-                            <input type="text" name="name" id="catName" class="form-input" required placeholder="e.g. Intern">
+                <!-- FORM CARD -->
+                <div class="w-full lg:w-96 shrink-0 sticky top-6">
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden ring-1 ring-slate-900/5">
+                        <div class="p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                            <h3 class="font-bold text-lg text-slate-800 dark:text-white" x-text="isEdit ? 'Edit Category' : 'New Category'"></h3>
+                            <p class="text-xs text-slate-500 mt-1">Define base salary and component splits.</p>
                         </div>
                         
-                        <div class="form-group">
-                            <label class="form-label">Gross Salary Amount</label>
-                            <input type="number" name="base_gross_amount" id="catGross" class="form-input" step="0.01" required oninput="calculateBreakdown()">
-                        </div>
+                        <form method="POST" class="p-5 space-y-5">
+                            <input type="hidden" name="id" x-model="form.id">
 
-                        <div class="form-group">
-                            <label class="form-label">Distribution Rules (%)</label>
-                            <div class="flex gap-2 mb-2">
-                                <div><small>Basic</small><input type="number" name="basic_perc" id="percBasic" class="form-input" value="40" step="0.01" oninput="calculateBreakdown()"></div>
-                                <div><small>Housing</small><input type="number" name="housing_perc" id="percHousing" class="form-input" value="30" step="0.01" oninput="calculateBreakdown()"></div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wide mb-1.5">Category Name</label>
+                                <input type="text" name="name" x-model="form.name" required placeholder="e.g. Senior Manager" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium focus:ring-brand-500 focus:border-brand-500 transition-shadow">
                             </div>
-                            <div class="flex gap-2">
-                                <div><small>Transport</small><input type="number" name="transport_perc" id="percTransport" class="form-input" value="20" step="0.01" oninput="calculateBreakdown()"></div>
-                                <div><small>Other</small><input type="number" name="other_perc" id="percOther" class="form-input" value="10" step="0.01" oninput="calculateBreakdown()"></div>
+
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wide mb-1.5">Gross Annual Salary (₦)</label>
+                                <input type="number" step="0.01" name="base_gross_amount" x-model="form.gross" @input="calculateValues()" required class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium focus:ring-brand-500 focus:border-brand-500 transition-shadow">
                             </div>
-                        </div>
 
-                        <div id="breakdownPreview" class="salary-breakdown-preview">
-                            <div class="breakdown-row"><span>Basic Salary</span><span id="valBasic">0.00</span></div>
-                            <div class="breakdown-row"><span>Housing Allow.</span><span id="valHousing">0.00</span></div>
-                            <div class="breakdown-row"><span>Transport Allow.</span><span id="valTransport">0.00</span></div>
-                            <div class="breakdown-row"><span>Other Allow.</span><span id="valOther">0.00</span></div>
-                            <div class="breakdown-row"><span>Total Gross</span><span id="valTotal">0.00</span></div>
-                            <div style="text-align: right; font-size: 0.8rem; margin-top: 5px; color: var(--text-muted);">Total Perc: <span id="valTotalPerc">100</span>%</div>
-                        </div>
+                            <div class="pt-2">
+                                <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wide mb-3 flex justify-between">
+                                    <span>Component Breakdown</span>
+                                    <span :class="{'text-green-600': totalPerc == 100, 'text-red-500': totalPerc != 100}">
+                                        Total: <span x-text="totalPerc.toFixed(1)"></span>%
+                                    </span>
+                                </label>
+                                
+                                <div class="space-y-3 bg-slate-50 dark:bg-slate-900/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800 max-h-[300px] overflow-y-auto">
+                                    <?php foreach ($components as $comp): ?>
+                                    <div class="flex items-center gap-3">
+                                        <div class="flex-1 min-w-0">
+                                            <p class="text-sm font-medium truncate text-slate-700 dark:text-slate-200" title="<?php echo $comp['name']; ?>">
+                                                <?php echo htmlspecialchars($comp['name']); ?>
+                                                <?php if($comp['is_custom'] == 0): ?><i data-lucide="lock" class="w-3 h-3 inline text-slate-400 ml-1"></i><?php endif; ?>
+                                            </p>
+                                        </div>
+                                        <div class="relative w-24">
+                                            <input type="number" step="0.01" min="0" max="100" 
+                                                name="percentages[<?php echo $comp['id']; ?>]" 
+                                                x-model.number="form.percentages[<?php echo $comp['id']; ?>]" 
+                                                @input="calculateValues()"
+                                                class="w-full rounded border-slate-200 dark:border-slate-700 text-right pr-6 py-1 text-sm bg-white dark:bg-slate-800 focus:ring-1 focus:ring-brand-500">
+                                            <span class="absolute right-2 top-1.5 text-xs text-slate-400">%</span>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
 
-                        <div class="mt-4 flex gap-2">
-                            <button type="submit" class="btn btn-primary" style="flex:1;">Save Category</button>
-                            <button type="button" onclick="resetForm()" class="btn btn-outline">Clear</button>
-                        </div>
-                    </form>
+                            <!-- Live Preview -->
+                            <div class="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-4 text-sm space-y-1">
+                                <div class="flex justify-between text-xs text-indigo-900 dark:text-indigo-200 font-semibold mb-2 uppercase">
+                                    <span>Values Preview</span>
+                                </div>
+                                <template x-for="(val, id) in previewValues" :key="id">
+                                    <div class="flex justify-between text-indigo-800 dark:text-indigo-300" x-show="val > 0">
+                                        <span x-text="compNames[id]"></span>
+                                        <span x-text="'₦' + val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})"></span>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <button type="submit" :disabled="Math.abs(totalPerc - 100) > 0.1" 
+                                :class="{'opacity-50 cursor-not-allowed': Math.abs(totalPerc - 100) > 0.1}"
+                                class="w-full py-2.5 bg-brand-600 text-white font-bold rounded-lg hover:bg-brand-700 shadow-md transition-all active:scale-[0.98]">
+                                <span x-text="isEdit ? 'Update Structure' : 'Create Structure'"></span>
+                            </button>
+                            
+                            <button type="button" x-show="isEdit" @click="resetForm()" class="w-full py-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">Cancel Edit</button>
+                        </form>
+                    </div>
                 </div>
+
             </div>
-
         </div>
     </main>
 </div>
 
 <script>
-function calculateBreakdown() {
-    const gross = parseFloat(document.getElementById('catGross').value) || 0;
-    const basic = parseFloat(document.getElementById('percBasic').value) || 0;
-    const housing = parseFloat(document.getElementById('percHousing').value) || 0;
-    const transport = parseFloat(document.getElementById('percTransport').value) || 0;
-    const other = parseFloat(document.getElementById('percOther').value) || 0;
+    lucide.createIcons();
 
-    document.getElementById('valBasic').innerText = (gross * (basic / 100)).toFixed(2);
-    document.getElementById('valHousing').innerText = (gross * (housing / 100)).toFixed(2);
-    document.getElementById('valTransport').innerText = (gross * (transport / 100)).toFixed(2);
-    document.getElementById('valOther').innerText = (gross * (other / 100)).toFixed(2);
-    document.getElementById('valTotal').innerText = gross.toFixed(2);
+    function salaryApp() {
+        return {
+            isEdit: false,
+            // Map Component IDs to Names for Preview
+            compNames: <?php 
+                $map = []; 
+                foreach($components as $c) $map[$c['id']] = $c['name']; 
+                echo json_encode($map); 
+            ?>,
+            
+            form: {
+                id: '',
+                name: '',
+                gross: 0,
+                percentages: <?php 
+                    // Initial Map for all components = 0 or default
+                    $initPerc = [];
+                    foreach($components as $c) $initPerc[$c['id']] = floatval($c['default_percentage']);
+                    echo json_encode($initPerc);
+                ?>
+            },
+            
+            totalPerc: 0,
+            previewValues: {},
 
-    const totalPerc = basic + housing + transport + other;
-    const percEl = document.getElementById('valTotalPerc');
-    percEl.innerText = totalPerc.toFixed(1);
-    percEl.style.color = Math.abs(totalPerc - 100) < 0.1 ? 'var(--success-color)' : 'var(--danger-color)';
-}
+            init() {
+                this.calculateValues();
+            },
 
-function editCategory(cat) {
-    document.getElementById('formTitle').innerText = 'Edit Category: ' + cat.name;
-    document.getElementById('catId').value = cat.id;
-    document.getElementById('catName').value = cat.name;
-    document.getElementById('catGross').value = cat.base_gross_amount;
-    document.getElementById('percBasic').value = cat.basic_perc;
-    document.getElementById('percHousing').value = cat.housing_perc;
-    document.getElementById('percTransport').value = cat.transport_perc;
-    document.getElementById('percOther').value = cat.other_perc;
-    calculateBreakdown();
-}
+            calculateValues() {
+                let total = 0;
+                let gross = parseFloat(this.form.gross) || 0;
+                
+                for (const [id, perc] of Object.entries(this.form.percentages)) {
+                    let p = parseFloat(perc) || 0;
+                    total += p;
+                    this.previewValues[id] = gross * (p / 100);
+                }
+                this.totalPerc = total;
+            },
 
-function resetForm() {
-    document.getElementById('formTitle').innerText = 'Add New Category';
-    document.getElementById('salaryForm').reset();
-    document.getElementById('catId').value = '';
-    calculateBreakdown();
-}
+            editCategory(cat) {
+                this.isEdit = true;
+                this.form.id = cat.id;
+                this.form.name = cat.name;
+                this.form.gross = cat.base_gross_amount;
+                
+                // Reset percentages to 0 first
+                for (let id in this.form.percentages) { this.form.percentages[id] = 0; }
+
+                // Fill from breakdown
+                if (cat.breakdown) {
+                    cat.breakdown.forEach(bd => {
+                        if (this.form.percentages.hasOwnProperty(bd.salary_component_id)) {
+                            this.form.percentages[bd.salary_component_id] = parseFloat(bd.percentage);
+                        }
+                    });
+                }
+                
+                this.calculateValues();
+            },
+
+            resetForm() {
+                this.isEdit = false;
+                this.form.id = '';
+                this.form.name = '';
+                this.form.gross = 0;
+                // Reset to defaults
+                this.form.percentages = <?php echo json_encode($initPerc); ?>;
+                this.calculateValues();
+            }
+        }
+    }
 </script>
-
 </body>
 </html>
