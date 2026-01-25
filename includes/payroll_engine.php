@@ -232,10 +232,10 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     }
 
     // 2. Fetch Active Employees & Gross
-    $stmt = $pdo->prepare("SELECT e.id, e.category_id, sc.base_gross_amount 
+    $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, sc.base_gross_amount 
                            FROM employees e
-                           JOIN salary_categories sc ON e.category_id = sc.id
-                           WHERE e.company_id = ? AND e.status = 'active'");
+                           JOIN salary_categories sc ON e.salary_category_id = sc.id
+                           WHERE e.company_id = ? AND e.employment_status = 'Full Time'");
     $stmt->execute([$company_id]);
     $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

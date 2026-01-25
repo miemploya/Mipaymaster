@@ -49,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $effective_date = $_POST['effective_from'];
                 $reason = clean_input($_POST['reason']);
                 
-                $res = $incManager->add_increment($employee_id, $type, $value, $effective_date, $reason, $_SESSION['user_id']);
+                $res = $incManager->add_increment($employee_id, $type, $value, $effective_date, $reason, null);
                 if ($res['status']) {
                     set_flash_message('success', "Increment request created successfully.");
                 } else {
@@ -90,8 +90,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Fetch Data
-// 1. Employees for Dropdown
-$stmt = $pdo->prepare("SELECT id, first_name, last_name, payroll_id FROM employees WHERE company_id = ? AND employment_status = 'active' ORDER BY first_name ASC");
+// 1. Employees for Dropdown (Note: employment_status ENUM has 'Full Time', 'Part Time', 'Contract', 'Intern' - NOT 'active')
+$stmt = $pdo->prepare("SELECT id, first_name, last_name, payroll_id FROM employees WHERE company_id = ? ORDER BY first_name ASC");
 $stmt->execute([$company_id]);
 $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -338,29 +338,27 @@ $current_page = 'increments';
                                     this.open = false;
                                     this.search = ''; 
                                 }
-                            }">
+                            }" @click.outside="open = false" class="relative">
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Employee</label>
                                 <input type="hidden" name="employee_id" :value="selectedId" required>
                                 
-                                <div class="relative">
-                                    <div @click="open = !open" @click.away="open = false" class="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm p-2.5 shadow-sm focus:border-brand-500 cursor-pointer flex justify-between items-center">
-                                        <span x-text="selectedName ? selectedName : 'Select Employee...'" :class="{'text-slate-400': !selectedName, 'text-slate-700 dark:text-white': selectedName}"></span>
-                                        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
+                                <div @click="open = !open" class="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm p-2.5 shadow-sm focus:border-brand-500 cursor-pointer flex justify-between items-center">
+                                    <span x-text="selectedName ? selectedName : 'Select Employee...'" :class="{'text-slate-400': !selectedName, 'text-slate-700 dark:text-white': selectedName}"></span>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
+                                </div>
+                                
+                                <div x-show="open" class="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto" style="display: none;">
+                                    <div class="p-2 sticky top-0 bg-white dark:bg-slate-800 border-b border-slate-100 dark:border-slate-700">
+                                        <input type="text" x-model="search" placeholder="Search..." class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 focus:outline-none focus:border-brand-500 dark:text-white" @click.stop>
                                     </div>
-                                    
-                                    <div x-show="open" class="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto" style="display: none;">
-                                        <div class="p-2 sticky top-0 bg-white dark:bg-slate-800 border-b border-slate-100 dark:border-slate-700">
-                                            <input type="text" x-model="search" placeholder="Search..." class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 focus:outline-none focus:border-brand-500 dark:text-white">
-                                        </div>
-                                        <ul>
-                                            <template x-for="emp in filteredEmployees" :key="emp.id">
-                                                <li @click="select(emp)" class="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer text-sm text-slate-700 dark:text-gray-300">
-                                                    <span x-text="emp.name"></span>
-                                                </li>
-                                            </template>
-                                            <li x-show="filteredEmployees.length === 0" class="px-4 py-2 text-sm text-slate-400 text-center">No results found</li>
-                                        </ul>
-                                    </div>
+                                    <ul>
+                                        <template x-for="emp in filteredEmployees" :key="emp.id">
+                                            <li @click="select(emp)" class="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer text-sm text-slate-700 dark:text-gray-300">
+                                                <span x-text="emp.name"></span>
+                                            </li>
+                                        </template>
+                                        <li x-show="filteredEmployees.length === 0" class="px-4 py-2 text-sm text-slate-400 text-center">No results found</li>
+                                    </ul>
                                 </div>
                             </div>
 

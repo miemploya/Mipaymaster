@@ -96,7 +96,7 @@ class IncrementManager {
             AND approval_status = 'approved' 
             AND is_active = 1
             AND effective_from <= ?
-            AND (effective_to IS NULL OR effective_to >= ?)
+            AND (effective_to IS NULL OR effective_to = '0000-00-00' OR effective_to >= ?)
             ORDER BY effective_from DESC, id DESC 
             LIMIT 1");
         
