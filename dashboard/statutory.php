@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pension_employee = floatval($_POST['pension_employee_perc']);
 
     try {
-        $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_percentage=?, pension_employee_percentage=? WHERE company_id=?");
+        $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_perc=?, pension_employee_perc=? WHERE company_id=?");
         $stmt->execute([$enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee, $company_id]);
         $success_msg = "Statutory settings updated successfully.";
     } catch (PDOException $e) {
@@ -82,10 +82,10 @@ $current_page = 'statutory';
 
                         <div class="flex gap-4">
                                 <label class="form-label">Employer Contribution (%)</label>
-                                <input type="number" name="pension_employer_perc" class="form-input" value="<?php echo $settings['pension_employer_percentage']; ?>" step="0.01">
+                                <input type="number" name="pension_employer_perc" class="form-input" value="<?php echo $settings['pension_employer_perc']; ?>" step="0.01">
                             </div>
                                 <label class="form-label">Employee Contribution (%)</label>
-                                <input type="number" name="pension_employee_perc" class="form-input" value="<?php echo $settings['pension_employee_percentage']; ?>" step="0.01">
+                                <input type="number" name="pension_employee_perc" class="form-input" value="<?php echo $settings['pension_employee_perc']; ?>" step="0.01">
                             </div>
                         </div>
                     </div>

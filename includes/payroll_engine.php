@@ -260,7 +260,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     $stmt->execute([$company_id]);
     $settings = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$settings) {
-        $settings = ['enable_paye'=>0, 'enable_pension'=>0, 'pension_employer_percentage'=>0, 'pension_employee_percentage'=>0, 'enable_nhis'=>0, 'enable_nhf'=>0];
+        $settings = ['enable_paye'=>0, 'enable_pension'=>0, 'pension_employer_perc'=>0, 'pension_employee_perc'=>0, 'enable_nhis'=>0, 'enable_nhf'=>0];
     }
 
     try {
@@ -343,8 +343,8 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $pension_emplr = 0;
 
             if ($settings['enable_pension']) {
-                $pension_emp = $pensionable_sum * ($settings['pension_employee_percentage'] / 100);
-                $pension_emplr = $pensionable_sum * ($settings['pension_employer_percentage'] / 100);
+                $pension_emp = $pensionable_sum * ($settings['pension_employee_perc'] / 100);
+                $pension_emplr = $pensionable_sum * ($settings['pension_employer_perc'] / 100);
             }
 
             // NHIS / NHF

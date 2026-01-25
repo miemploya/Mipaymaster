@@ -5,6 +5,38 @@ $company_id = $_SESSION['company_id'] ?? 0;
 $current_page = 'employees';
 
 // --- ENSURE DATABASE MIGRATION (Columns & Tables) ---
+if (isset($_GET['ajax_fetch'])) {
+    header('Content-Type: application/json');
+    $id = preg_replace('/[^0-9]/', '', $_GET['ajax_fetch']);
+    
+    $stmt = $pdo->prepare("SELECT * FROM employees WHERE id = ? AND company_id = ?");
+    $stmt->execute([$id, $company_id]);
+    $emp = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if($emp) {
+        // Fetch Sub-tables
+        $stmt = $pdo->prepare("SELECT * FROM employee_education WHERE employee_id=?");
+        $stmt->execute([$id]);
+        $emp['education'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->prepare("SELECT * FROM employee_work_history WHERE employee_id=?");
+        $stmt->execute([$id]);
+        $emp['work_history'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->prepare("SELECT * FROM employee_guarantors WHERE employee_id=?");
+        $stmt->execute([$id]);
+        $emp['guarantors'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->prepare("SELECT * FROM next_of_kin WHERE employee_id=?");
+        $stmt->execute([$id]);
+        $emp['nok'] = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        echo json_encode($emp);
+    } else {
+        echo json_encode(['error' => 'Not found']);
+    }
+    exit;
+}
 try {
     // 1. Employees Columns
     $cols = $pdo->query("SHOW COLUMNS FROM employees LIKE 'department'")->fetchAll();
@@ -302,7 +334,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("INSERT INTO employee_education (employee_id, institution, qualification, year, course, certificate_path) VALUES (?, ?, ?, ?, ?, ?)");
                     foreach($_POST['edu_institution'] as $k => $inst) {
                         if(!empty($inst)) {
-                            $cert_path = isset($_FILES['edu_certificate']) ? upload_file($_FILES['edu_certificate'], $k, "uploads/employees/$new_emp_id/education") : null;
+                            // Check for new upload, otherwise use existing path
+                            $cert_path = isset($_FILES['edu_certificate']) && !empty($_FILES['edu_certificate']['name'][$k]) 
+                                ? upload_file($_FILES['edu_certificate'], $k, "uploads/employees/$new_emp_id/education") 
+                                : ($_POST['edu_existing_path'][$k] ?? null);
+                                
                             $stmt->execute([$new_emp_id, $inst, $_POST['edu_qualification'][$k], (int)$_POST['edu_year'][$k], $_POST['edu_course'][$k], $cert_path]);
                         }
                     }
@@ -312,7 +348,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("INSERT INTO employee_work_history (employee_id, employer, role, duration, document_path) VALUES (?, ?, ?, ?, ?)");
                     foreach($_POST['work_employer'] as $k => $emp) {
                         if($emp) {
-                            $doc_path = isset($_FILES['work_document']) ? upload_file($_FILES['work_document'], $k, "uploads/employees/$new_emp_id/work") : null;
+                            $doc_path = isset($_FILES['work_document']) && !empty($_FILES['work_document']['name'][$k])
+                                ? upload_file($_FILES['work_document'], $k, "uploads/employees/$new_emp_id/work") 
+                                : ($_POST['work_existing_path'][$k] ?? null);
+                                
                             $stmt->execute([$new_emp_id, $emp, $_POST['work_role'][$k], $_POST['work_duration'][$k], $doc_path]);
                         }
                     }
@@ -322,7 +361,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("INSERT INTO employee_guarantors (employee_id, full_name, relationship, phone, address, occupation, id_path) VALUES (?, ?, ?, ?, ?, ?, ?)");
                     foreach($_POST['guarantor_name'] as $k => $name) {
                         if($name) {
-                            $id_path = isset($_FILES['guarantor_id']) ? upload_file($_FILES['guarantor_id'], $k, "uploads/employees/$new_emp_id/guarantors") : null;
+                            $id_path = isset($_FILES['guarantor_id']) && !empty($_FILES['guarantor_id']['name'][$k])
+                                ? upload_file($_FILES['guarantor_id'], $k, "uploads/employees/$new_emp_id/guarantors") 
+                                : ($_POST['guarantor_existing_path'][$k] ?? null);
+                                
                             $stmt->execute([$new_emp_id, $name, $_POST['guarantor_rel'][$k], $_POST['guarantor_phone'][$k], $_POST['guarantor_address'][$k], $_POST['guarantor_job'][$k], $id_path]);
                         }
                     }
@@ -432,6 +474,9 @@ foreach ($js_employees as &$emp) {
     $emp['name'] = ($emp['first_name'] ?? '') . ' ' . ($emp['last_name'] ?? '');
     $emp['category'] = $emp['category_name'] ?? 'Unassigned';
     $emp['gross'] = $emp['base_gross_amount'] ?? 0;
+    
+    // Fix: Map Photo Path
+    $emp['img'] = !empty($emp['photo_path']) ? '../' . $emp['photo_path'] : null;
     
     // Ensure nested objects are arrays if null/empty
     if (!isset($emp['education'])) $emp['education'] = [];
@@ -574,62 +619,66 @@ unset($emp);
                     this.view = 'add';
                 },
 
-                editEmployee(empId) {
-                    // Find full employee object from raw data if possible, or use selectedEmployee
-                    // Since selectedEmployee has basic info, we might need to find the raw one.
-                    // For now, we assume selectedEmployee is mostly sufficient or we use logic we built.
-                    // Actually, the PHP loop populated 'employees' with extended data? No, it populated 'employees' with flattened data.
-                    // We need the raw extended data.
-                    // Ideally, we would fetch the full data via AJAX for edit. But let's try to map what we have.
-                    
-                    // To keep it robust, let's reset and map what is available in selectedEmployee.
-                    // Limitation: List view doesn't have ALL fields (like address, DOB).
-                    // We need to fetch full details.
-                    
+                async editEmployee(empId) {
                     const id = empId.toString().replace(/\D/g, ''); 
-                    this.view = 'add'; // Re-use wizard
-                    this.formMode = 'update_employee';
-                    this.resetForm();
-
-                    // Fetch Full Data
-                    fetch(`dashboard/employees.php?ajax_fetch=${id}`) // Implementation detail: we could add a simple GET handler or reuse the logic.
-                    // Wait, we don't have a fetch-full endpoint yet. 
-                    // Let's populate what we can from selectedEmployee if available, otherwise partial.
                     
-                    if(this.selectedEmployee) {
-                        const e = this.selectedEmployee;
-                         // Map known fields. Note: This relies on selectedEmployee being fully populated, which we fixed in previous steps!
-                        // In previous step we passed 'selectedEmployee' which was from $js_employees.
-                        // But $js_employees was flattened.
-                        // Let's rely on the PHP array we inspected: $js_employees has 'work_history', 'education', etc?
-                        // YES, we added those in Step 354.
+                    // 1. Reset Form FIRST (this sets mode to 'create', so we override after)
+                    this.resetForm();
+                    
+                    // 2. Set Mode to UPDATE
+                    this.formMode = 'update_employee';
+                    this.view = 'add'; 
+                    this.formData.id = id; // CRITICAL: Set ID
+
+                    // 3. Fetch Full Data
+                    try {
+                        const response = await fetch(`employees.php?ajax_fetch=${id}`);
+                        const data = await response.json();
                         
-                        // Wait, $js_employees in Step 361 was MAPPED to a smaller object.
-                        // We lost the extended data in the JSON encode!
-                        // FIX: We need access to the full raw data.
-                        
-                        // Quick Fix: Let's assume the user is okay with us fixing the mapping in the next tool call if needed.
-                        // For now, let's implement the structure.
-                        
-                        this.formData.id = id;
-                        this.formData.first_name = e.name.split(' ')[0] || '';
-                        this.formData.last_name = e.name.split(' ').slice(1).join(' ') || '';
-                        this.formData.email = e.email;
-                        this.formData.phone = e.phone;
-                        this.formData.address = e.address;
-                        this.formData.department = e.department;
-                        this.formData.job_title = e.role;
-                        
-                        // Populate lists if they exist in the object
-                        if(e.education && e.education.length) this.educationList = e.education;
-                        if(e.work_history && e.work_history.length) this.workList = e.work_history;
-                        if(e.guarantors && e.guarantors.length) this.guarantorList = e.guarantors;
-                        if(e.nok) {
-                            this.formData.nok_name = e.nok.full_name;
-                            this.formData.nok_relationship = e.nok.relationship;
-                            this.formData.nok_phone = e.nok.phone;
-                            this.formData.nok_address = e.nok.address;
+                        if(data && !data.error) {
+                            // Populate FormData
+                            this.formData.first_name = data.first_name || '';
+                            this.formData.photo_path = data.photo_path || ''; // ADDED: Enable preview of existing photo
+                            this.formData.last_name = data.last_name || '';
+                            this.formData.email = data.email || '';
+                            this.formData.phone = data.phone || '';
+                            this.formData.gender = data.gender || 'Male';
+                            this.formData.dob = data.dob || '';
+                            this.formData.address = data.address || '';
+                            this.formData.marital_status = data.marital_status || 'Single';
+                            
+                            this.formData.department = data.department || '';
+                            this.formData.job_title = data.job_title || '';
+                            this.formData.employment_type = data.employment_type || 'Full Time';
+                            this.formData.employment_status = data.employment_status || 'Active';
+                            this.formData.date_of_joining = data.date_of_joining || '';
+                            this.formData.job_description = data.job_description || '';
+                            this.formData.salary_category_id = data.salary_category_id || '';
+                            
+                            this.formData.bank_name = data.bank_name || '';
+                            this.formData.account_number = data.account_number || '';
+                            this.formData.account_name = data.account_name || '';
+                            
+                            this.formData.pension_pfa = data.pension_pfa || '';
+                            this.formData.pension_rsa = data.pension_rsa || '';
+                            this.hasPension = !!(data.pension_pfa || data.pension_rsa);
+
+                            // Lists
+                            if(data.education && data.education.length) this.educationList = data.education;
+                            if(data.work_history && data.work_history.length) this.workList = data.work_history;
+                            if(data.guarantors && data.guarantors.length) this.guarantorList = data.guarantors;
+                            
+                            // NOK
+                            if(data.nok) {
+                                this.formData.nok_name = data.nok.full_name || '';
+                                this.formData.nok_relationship = data.nok.relationship || '';
+                                this.formData.nok_phone = data.nok.phone || '';
+                                this.formData.nok_address = data.nok.address || '';
+                            }
                         }
+                    } catch (e) {
+                        console.error("Fetch Error", e);
+                        alert("Could not load employee details. Please try again.");
                     }
                 },
                 
@@ -874,13 +923,19 @@ unset($emp);
                                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
                                         <!-- Photo Data -->
                                         <td class="px-6 py-4">
-                                            <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-200 dark:border-slate-700">
-                                                <img :src="emp.img" alt="Avatar" class="w-full h-full object-cover">
+                                            <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-200 dark:border-slate-700 relative flex items-center justify-center font-bold text-white text-xs"
+                                                 :style="!emp.img ? { backgroundColor: emp.color } : {}">
+                                                <template x-if="emp.img">
+                                                    <img :src="emp.img" alt="Avatar" class="w-full h-full object-cover">
+                                                </template>
+                                                <template x-if="!emp.img">
+                                                    <span x-text="emp.initials"></span>
+                                                </template>
                                             </div>
                                         </td>
-                                        <td class="px-6 py-4 font-mono text-slate-500" x-text="emp.id"></td>
+                                        <td class="px-6 py-4 font-mono text-slate-500" x-text="emp.id_display || emp.id"></td>
                                         <td class="px-6 py-4 font-medium text-slate-900 dark:text-white" x-text="emp.name"></td>
-                                        <td class="px-6 py-4 hidden md:table-cell text-slate-500" x-text="emp.dept"></td>
+                                        <td class="px-6 py-4 hidden md:table-cell text-slate-500" x-text="emp.department"></td>
                                         <td class="px-6 py-4 hidden md:table-cell text-slate-500" x-text="emp.category"></td>
                                         <td class="px-6 py-4 text-right font-medium text-slate-900 dark:text-white" x-text="'₦ ' + Number(emp.gross).toLocaleString()"></td>
                                         <td class="px-6 py-4 text-center">
@@ -1114,11 +1169,16 @@ unset($emp);
                                             <div><label class="form-label">Qualification</label><input type="text" name="edu_qualification[]" class="form-input capitalize" x-model="edu.qualification"></div>
                                             <div><label class="form-label">Year</label><input type="number" name="edu_year[]" class="form-input" x-model="edu.year"></div>
                                             <div class="col-span-2"><label class="form-label">Course</label><input type="text" name="edu_course[]" class="form-input capitalize" x-model="edu.course"></div>
-                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3 flex items-center justify-between">
                                                 <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
-                                                    <i data-lucide="upload" class="w-4 h-4"></i> Upload Certificate
+                                                    <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="edu.certificate_path ? 'Change Certificate' : 'Upload Certificate'"></span>
                                                     <input type="file" name="edu_certificate[]" class="hidden">
+                                                    <!-- Hidden input to preserve existing path -->
+                                                    <input type="hidden" name="edu_existing_path[]" :value="edu.certificate_path">
                                                 </label>
+                                                <template x-if="edu.certificate_path">
+                                                    <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
+                                                </template>
                                             </div>
                                         </div>
                                         <button type="button" @click="removeEducation(index)" class="absolute top-2 right-2 text-slate-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
@@ -1140,11 +1200,16 @@ unset($emp);
                                             <div class="col-span-2"><label class="form-label">Employer Name</label><input type="text" name="work_employer[]" class="form-input capitalize" x-model="work.employer"></div>
                                             <div><label class="form-label">Job Title</label><input type="text" name="work_role[]" class="form-input capitalize" x-model="work.role"></div>
                                             <div><label class="form-label">Duration</label><input type="text" name="work_duration[]" placeholder="e.g. 2019-2023" class="form-input" x-model="work.duration"></div>
-                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3 flex items-center justify-between">
                                                 <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
-                                                    <i data-lucide="upload" class="w-4 h-4"></i> Upload Document
+                                                    <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="work.document_path ? 'Change Document' : 'Upload Document'"></span>
                                                     <input type="file" name="work_document[]" class="hidden">
+                                                    <!-- Hidden input to preserve existing path -->
+                                                    <input type="hidden" name="work_existing_path[]" :value="work.document_path">
                                                 </label>
+                                                <template x-if="work.document_path">
+                                                    <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
+                                                </template>
                                             </div>
                                         </div>
                                         <button type="button" @click="removeWork(index)" class="absolute top-2 right-2 text-slate-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
@@ -1163,16 +1228,24 @@ unset($emp);
                                 <template x-for="(g, index) in guarantorList" :key="index">
                                     <div class="p-4 border border-slate-200 dark:border-slate-700 rounded-lg relative">
                                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div class="col-span-2"><label class="form-label">Full Name</label><input type="text" name="guarantor_name[]" class="form-input capitalize" x-model="g.name"></div>
+                                            <div class="col-span-2"><label class="form-label">Full Name</label><input type="text" name="guarantor_name[]" class="form-input capitalize" x-model="g.full_name"></div>
                                             <div><label class="form-label">Relationship</label><input type="text" name="guarantor_rel[]" class="form-input capitalize" x-model="g.relationship"></div>
                                             <div><label class="form-label">Phone</label><input type="tel" name="guarantor_phone[]" class="form-input" x-model="g.phone"></div>
                                             <div class="col-span-2"><label class="form-label">Address</label><input type="text" name="guarantor_address[]" class="form-input capitalize" x-model="g.address"></div>
-                                            <div class="col-span-2"><label class="form-label">Occupation</label><input type="text" name="guarantor_job[]" class="form-input capitalize" x-model="g.occupation"></div>
-                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                                            <div><label class="form-label">Occupation</label><input type="text" name="guarantor_job[]" class="form-input capitalize" x-model="g.occupation"></div>
+                                            <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3 flex items-center justify-between">
                                                 <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
-                                                    <i data-lucide="upload" class="w-4 h-4"></i> Upload ID
-                                                    <input type="file" name="guarantor_id[]" class="hidden">
+                                                    <i data-lucide="upload" class="w-4 h-4"></i>
+                                                    <!-- Dynamic Label -->
+                                                    <span x-text="g.newFileName ? g.newFileName : (g.id_path ? 'Change ID' : 'Upload ID')"></span>
+                                                    <input type="file" name="guarantor_id[]" class="hidden" 
+                                                           @change="g.newFileName = $event.target.files[0]?.name">
+                                                    <!-- Hidden input to preserve existing path -->
+                                                    <input type="hidden" name="guarantor_existing_path[]" :value="g.id_path">
                                                 </label>
+                                                <template x-if="g.id_path && !g.newFileName">
+                                                    <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
+                                                </template>
                                             </div>
                                         </div>
                                         <button type="button" @click="removeGuarantor(index)" class="absolute top-2 right-2 text-slate-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
@@ -1234,8 +1307,8 @@ unset($emp);
                         <div class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col md:flex-row items-center md:items-start gap-6 shadow-sm">
                             <div class="relative group">
                                 <div class="w-24 h-24 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl font-bold text-slate-400 overflow-hidden border-2 border-slate-50 dark:border-slate-800 shadow-inner">
-                                    <template x-if="selectedEmployee?.photo_path">
-                                        <img :src="'../'+selectedEmployee.photo_path" class="w-full h-full object-cover">
+                                    <template x-if="selectedEmployee?.img">
+                                        <img :src="selectedEmployee.img" class="w-full h-full object-cover">
                                     </template>
                                     <template x-if="!selectedEmployee?.photo_path">
                                         <span x-text="selectedEmployee?.initials" :style="{ color: selectedEmployee?.color }"></span>
@@ -1366,6 +1439,32 @@ unset($emp);
                                             </template>
                                         </div>
                                     </div>
+
+                                    <!-- Work History (Overview) -->
+                                    <div class="md:col-span-2 bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                        <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                            <i data-lucide="briefcase" class="w-4 h-4 text-slate-500"></i> Work History
+                                        </h3>
+                                        <div class="space-y-4">
+                                            <template x-if="selectedEmployee?.work_history && selectedEmployee?.work_history.length">
+                                                <template x-for="work in selectedEmployee.work_history">
+                                                    <div class="flex items-start gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 last:border-0 last:pb-0">
+                                                        <div class="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-700 flex items-center justify-center shrink-0 text-slate-500">
+                                                            <i data-lucide="building-2" class="w-5 h-5"></i>
+                                                        </div>
+                                                        <div>
+                                                            <h4 class="font-bold text-slate-900 dark:text-white text-sm" x-text="work.employer"></h4>
+                                                            <p class="text-xs text-slate-500" x-text="work.role"></p>
+                                                            <p class="text-[10px] text-slate-400 mt-0.5" x-text="work.duration"></p>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </template>
+                                            <template x-if="!selectedEmployee?.work_history || !selectedEmployee?.work_history.length">
+                                                <p class="text-slate-500 text-sm">No work history recorded.</p>
+                                            </template>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1406,7 +1505,9 @@ unset($emp);
                             <div x-show="profileTab === 'increments'" x-transition.opacity.duration.300ms>
                                 <div class="flex items-center justify-between mb-6">
                                     <h3 class="text-lg font-bold text-slate-900 dark:text-white">Adjustments History</h3>
-                                    <button class="text-sm text-brand-600 font-medium hover:underline">Download Report</button>
+                                    <a href="increments.php" class="text-sm text-brand-600 font-medium hover:underline flex items-center gap-1">
+                                        Manage / Download <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                                    </a>
                                 </div>
                                 <template x-if="incrementHistory.length === 0">
                                     <div class="text-center py-12 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
@@ -1439,11 +1540,189 @@ unset($emp);
                             </div>
 
                             <!-- OTHER PLACEHOLDERS -->
-                            <div x-show="['attendance', 'documents'].includes(profileTab)">
-                                <div class="text-center py-20 text-slate-400">
-                                    <i data-lucide="construction" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
-                                    <p class="font-medium">This module is under construction.</p>
-                                    <p class="text-xs mt-2">Check back in V2.2</p>
+                            <!-- DOCUMENTS TAB -->
+                            <div x-show="profileTab === 'documents'" x-transition.opacity.duration.300ms>
+                                <div class="space-y-6">
+                                    
+                                    <!-- 1. Personal Documents -->
+                                    <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                        <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                            <i data-lucide="folder-open" class="w-4 h-4 text-brand-500"></i> Personal Documents
+                                        </h3>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <!-- Valid ID -->
+                                            <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                                                <div class="flex items-center gap-3">
+                                                    <div class="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                                                        <i data-lucide="file-badge" class="w-5 h-5"></i>
+                                                    </div>
+                                                    <div>
+                                                        <p class="font-bold text-slate-900 dark:text-white text-sm">Valid Identification</p>
+                                                        <p class="text-xs text-slate-500" x-text="selectedEmployee?.id_document_path ? 'Uploaded' : 'Not Uploaded'"></p>
+                                                    </div>
+                                                </div>
+                                                <template x-if="selectedEmployee?.id_document_path">
+                                                    <a :href="'../' + selectedEmployee.id_document_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-md border border-brand-200 transition-colors">
+                                                        View / Download
+                                                    </a>
+                                                </template>
+                                            </div>
+                                    <!-- 2. Profile Photo (Explicit Download) -->
+                                    <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                                                <i data-lucide="image" class="w-5 h-5"></i>
+                                            </div>
+                                            <div>
+                                                <p class="font-bold text-slate-900 dark:text-white text-sm">Profile Photo</p>
+                                                <p class="text-xs text-slate-500" x-text="selectedEmployee?.photo_path ? 'Uploaded' : 'Not Uploaded'"></p>
+                                            </div>
+                                        </div>
+                                        <template x-if="selectedEmployee?.photo_path">
+                                            <div class="flex gap-2">
+                                                <a :href="'../' + selectedEmployee.photo_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-md border border-brand-200 transition-colors">
+                                                    View
+                                                </a>
+                                                <a :href="'../' + selectedEmployee.photo_path" download class="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 transition-colors">
+                                                    Download
+                                                </a>
+                                            </div>
+                                        </template>
+                                    </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 2. Education Certificates -->
+                                    <template x-if="selectedEmployee?.education && selectedEmployee.education.some(d => d.certificate_path)">
+                                        <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                                <i data-lucide="graduation-cap" class="w-4 h-4 text-blue-500"></i> Education Certificates
+                                            </h3>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                <template x-for="edu in selectedEmployee.education">
+                                                    <template x-if="edu.certificate_path">
+                                                        <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                                                            <div class="flex items-center gap-3">
+                                                                <div class="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400">
+                                                                    <i data-lucide="file-check" class="w-5 h-5"></i>
+                                                                </div>
+                                                                <div>
+                                                                    <p class="font-bold text-slate-900 dark:text-white text-sm" x-text="edu.institution"></p>
+                                                                    <p class="text-xs text-slate-500" x-text="edu.qualification"></p>
+                                                                </div>
+                                                            </div>
+                                                            <a :href="'../' + edu.certificate_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200 transition-colors">
+                                                                Download
+                                                            </a>
+                                                        </div>
+                                                    </template>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- 3. Work Documents -->
+                                    <template x-if="selectedEmployee?.work_history && selectedEmployee.work_history.some(d => d.document_path)">
+                                        <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                                <i data-lucide="briefcase" class="w-4 h-4 text-amber-500"></i> Employment Records
+                                            </h3>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                <template x-for="work in selectedEmployee.work_history">
+                                                    <template x-if="work.document_path">
+                                                        <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                                                            <div class="flex items-center gap-3">
+                                                                <div class="w-10 h-10 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                                                                    <i data-lucide="file-text" class="w-5 h-5"></i>
+                                                                </div>
+                                                                <div>
+                                                                    <p class="font-bold text-slate-900 dark:text-white text-sm" x-text="work.employer"></p>
+                                                                    <p class="text-xs text-slate-500" x-text="work.role"></p>
+                                                                </div>
+                                                            </div>
+                                                            <a :href="'../' + work.document_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md border border-amber-200 transition-colors">
+                                                                Download
+                                                            </a>
+                                                        </div>
+                                                    </template>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- 4. Guarantor Details & IDs -->
+                                    <template x-if="selectedEmployee?.guarantors && selectedEmployee.guarantors.length > 0">
+                                        <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800 mb-6">
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                                <i data-lucide="shield-check" class="w-4 h-4 text-green-500"></i> Guarantors
+                                            </h3>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                <template x-for="g in selectedEmployee.guarantors">
+                                                    <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+                                                        <div class="flex justify-between items-start mb-3">
+                                                            <div class="flex items-center gap-3">
+                                                                <div class="w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center text-green-600 dark:text-green-400">
+                                                                    <i data-lucide="user-check" class="w-5 h-5"></i>
+                                                                </div>
+                                                                <div>
+                                                                    <p class="font-bold text-slate-900 dark:text-white text-sm" x-text="g.full_name || g.name"></p>
+                                                                    <p class="text-xs text-slate-500" x-text="g.relationship"></p>
+                                                                </div>
+                                                            </div>
+                                                            <template x-if="g.id_path">
+                                                                <a :href="'../' + g.id_path" target="_blank" class="px-2 py-1 text-xs font-bold text-green-600 bg-green-50 hover:bg-green-100 rounded border border-green-200 transition-colors">
+                                                                    ID Card
+                                                                </a>
+                                                            </template>
+                                                        </div>
+                                                        <div class="space-y-1 pl-13"> 
+                                                            <div class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400" x-show="g.phone">
+                                                                <i data-lucide="phone" class="w-3 h-3 text-slate-400"></i>
+                                                                <span x-text="g.phone"></span>
+                                                            </div>
+                                                            <div class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400" x-show="g.address">
+                                                                <i data-lucide="map-pin" class="w-3 h-3 text-slate-400"></i>
+                                                                <span x-text="g.address"></span>
+                                                            </div>
+                                                            <div class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400" x-show="g.occupation">
+                                                                <i data-lucide="briefcase" class="w-3 h-3 text-slate-400"></i>
+                                                                <span x-text="g.occupation"></span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- 5. Work History (Requested Feature) -->
+                                    <template x-if="selectedEmployee?.work_history && selectedEmployee.work_history.length > 0">
+                                        <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                                <i data-lucide="briefcase" class="w-4 h-4 text-blue-500"></i> Work History
+                                            </h3>
+                                            <div class="space-y-3">
+                                                <template x-for="work in selectedEmployee.work_history">
+                                                    <div class="flex items-center justify-between p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+                                                        <div class="flex items-center gap-3">
+                                                            <div class="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400">
+                                                                <i data-lucide="building-2" class="w-5 h-5"></i>
+                                                            </div>
+                                                            <div>
+                                                                <p class="font-bold text-slate-900 dark:text-white text-sm" x-text="work.employer"></p>
+                                                                <p class="text-xs text-slate-500"><span x-text="work.role"></span> • <span x-text="work.duration"></span></p>
+                                                            </div>
+                                                        </div>
+                                                        <template x-if="work.document_path">
+                                                            <a :href="'../' + work.document_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200 transition-colors">
+                                                                View Doc
+                                                            </a>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>
@@ -1482,43 +1761,7 @@ unset($emp);
             });
         }
 
-        function employeeApp() {
-            return {
-                view: 'list', // list, add, profile
-                currentStep: 1,
-                formMode: 'create_employee',
-                profileTab: 'overview',
-                selectedEmployee: null,
-                incrementHistory: [],
-                statusFilter: 'all',
-                searchQuery: '',
 
-                getPageTitle() {
-                    if (this.view === 'list') return 'Employees';
-                    if (this.view === 'add') return this.formMode === 'create_employee' ? 'Onboard New' : 'Edit Employee';
-                    if (this.view === 'profile') return 'Employee Profile';
-                    return 'Employees';
-                },
-
-                // Mock data or fetch logic could go here
-                // For now, these empty placeholders prevent Alpine errors
-                init() {
-                    // checks
-                },
-
-                editEmployee(id) {
-                    this.view = 'add';
-                    this.formMode = 'update_employee';
-                    this.currentStep = 1;
-                },
-                
-                deleteEmployee(id) {
-                    if(confirm('Are you sure you want to delete this employee?')) {
-                        console.log('Deleting', id);
-                    }
-                }
-            }
-        }
         
         const mobileToggle = document.getElementById('mobile-sidebar-toggle');
         const sidebar = document.getElementById('sidebar');

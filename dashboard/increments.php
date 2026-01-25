@@ -17,6 +17,25 @@ try {
     }
 } catch (Exception $e) { /* ignore */ }
 
+// --- ENSURE TABLE EXISTS ---
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS employee_salary_adjustments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        employee_id INT NOT NULL,
+        adjustment_type ENUM('increment', 'decrement') NOT NULL,
+        amount DECIMAL(15,2) NOT NULL,
+        previous_gross DECIMAL(15,2) NOT NULL,
+        new_gross DECIMAL(15,2) NOT NULL,
+        reason TEXT,
+        effective_from DATE NOT NULL,
+        approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+        approved_by INT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX(employee_id),
+        INDEX(approval_status)
+    )");
+} catch (Exception $e) { /* ignore */ }
+
 // Handle Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -72,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Fetch Data
 // 1. Employees for Dropdown
-$stmt = $pdo->prepare("SELECT id, first_name, last_name, payroll_id FROM employees WHERE company_id = ? AND employment_status = 'Active' ORDER BY first_name ASC");
+$stmt = $pdo->prepare("SELECT id, first_name, last_name, payroll_id FROM employees WHERE company_id = ? AND employment_status = 'active' ORDER BY first_name ASC");
 $stmt->execute([$company_id]);
 $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -299,14 +318,50 @@ $current_page = 'increments';
                         <input type="hidden" name="action" value="add_increment">
                         
                         <div class="space-y-4">
-                            <div>
-                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Employee</label>
-                                <select name="employee_id" required class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm p-2.5 shadow-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500">
-                                    <option value="">Select Employee...</option>
+                            <div x-data="{ 
+                                search: '', 
+                                open: false, 
+                                selectedId: '',
+                                selectedName: '',
+                                employees: [
                                     <?php foreach ($employees as $emp): ?>
-                                    <option value="<?php echo $emp['id']; ?>"><?php echo htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name']); ?> (<?php echo $emp['payroll_id']; ?>)</option>
+                                    { id: '<?= $emp['id'] ?>', name: '<?= htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name'] . ' (' . ($emp['payroll_id'] ?? 'N/A') . ')') ?>' },
                                     <?php endforeach; ?>
-                                </select>
+                                ],
+                                get filteredEmployees() {
+                                    if (this.search === '') return this.employees;
+                                    return this.employees.filter(emp => emp.name.toLowerCase().includes(this.search.toLowerCase()));
+                                },
+                                select(emp) {
+                                    this.selectedId = emp.id;
+                                    this.selectedName = emp.name;
+                                    this.open = false;
+                                    this.search = ''; 
+                                }
+                            }">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Employee</label>
+                                <input type="hidden" name="employee_id" :value="selectedId" required>
+                                
+                                <div class="relative">
+                                    <div @click="open = !open" @click.away="open = false" class="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm p-2.5 shadow-sm focus:border-brand-500 cursor-pointer flex justify-between items-center">
+                                        <span x-text="selectedName ? selectedName : 'Select Employee...'" :class="{'text-slate-400': !selectedName, 'text-slate-700 dark:text-white': selectedName}"></span>
+                                        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
+                                    </div>
+                                    
+                                    <div x-show="open" class="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto" style="display: none;">
+                                        <div class="p-2 sticky top-0 bg-white dark:bg-slate-800 border-b border-slate-100 dark:border-slate-700">
+                                            <input type="text" x-model="search" placeholder="Search..." class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 focus:outline-none focus:border-brand-500 dark:text-white">
+                                        </div>
+                                        <ul>
+                                            <template x-for="emp in filteredEmployees" :key="emp.id">
+                                                <li @click="select(emp)" class="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer text-sm text-slate-700 dark:text-gray-300">
+                                                    <span x-text="emp.name"></span>
+                                                </li>
+                                            </template>
+                                            <li x-show="filteredEmployees.length === 0" class="px-4 py-2 text-sm text-slate-400 text-center">No results found</li>
+                                        </ul>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="grid grid-cols-2 gap-4">

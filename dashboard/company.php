@@ -663,7 +663,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  $pdo->prepare("INSERT INTO statutory_settings (company_id) VALUES (?)")->execute([$company_id]);
             }
             
-            $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_percentage=?, pension_employee_percentage=? WHERE company_id=?");
+            $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_perc=?, pension_employee_perc=? WHERE company_id=?");
             $stmt->execute([$enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee, $company_id]);
             $success_msg = "Statutory settings updated.";
         } catch (PDOException $e) { $error_msg = "Error updating settings: " . $e->getMessage(); }
@@ -801,7 +801,7 @@ if (!$company) {
 $company_name = $company['name'] ?? 'Company';
 
 // 2. Statutory
-$statutory = ['enable_paye'=>1, 'enable_pension'=>1, 'pension_employer_percentage'=>10, 'pension_employee_percentage'=>8, 'enable_nhis'=>0, 'enable_nhf'=>0];
+$statutory = ['enable_paye'=>1, 'enable_pension'=>1, 'pension_employer_perc'=>10, 'pension_employee_perc'=>8, 'enable_nhis'=>0, 'enable_nhf'=>0];
 try {
     $stmt = $pdo->prepare("SELECT * FROM statutory_settings WHERE company_id = ?");
     $stmt->execute([$company_id]);
@@ -1080,8 +1080,8 @@ try {
                     pension: <?php echo $statutory['enable_pension'] ? 'true' : 'false'; ?>,
                     nhis: <?php echo $statutory['enable_nhis'] ? 'true' : 'false'; ?>,
                     nhf: <?php echo $statutory['enable_nhf'] ? 'true' : 'false'; ?>,
-                    pension_employer: <?php echo $statutory['pension_employer_percentage'] ?? 0; ?>,
-                    pension_employee: <?php echo $statutory['pension_employee_percentage'] ?? 0; ?>
+                    pension_employer: <?php echo $statutory['pension_employer_perc'] ?? 0; ?>,
+                    pension_employee: <?php echo $statutory['pension_employee_perc'] ?? 0; ?>
                 },
                 behaviour: {
                     prorate: <?php echo $behaviour['prorate_new_hires'] ? 'true' : 'false'; ?>,
@@ -1708,7 +1708,7 @@ try {
                                 
                                 <div class="md:col-span-2">
                                     <label class="form-label mb-2 block font-bold text-sm text-slate-700 dark:text-slate-300">Address</label>
-                                    <textarea name="address" rows="3" class="form-input w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all"><?php echo htmlspecialchars($company['address']); ?></textarea>
+                                    <textarea name="address" rows="3" class="form-input w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all"><?php echo htmlspecialchars($company['address'] ?? ''); ?></textarea>
                                 </div>
                                 
                                 <div>
@@ -1726,7 +1726,7 @@ try {
                                         <i data-lucide="chevron-down" class="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"></i>
                                     </div>
                                 </div>
-                                <input type="hidden" name="tax_jurisdiction" value="<?php echo htmlspecialchars($company['tax_jurisdiction']); ?>">
+                                <input type="hidden" name="tax_jurisdiction" value="<?php echo htmlspecialchars($company['tax_jurisdiction'] ?? ''); ?>">
                             </div>
                             <!-- Save Button (Fixed Size & Position) -->
                             <div class="mt-8 flex justify-end border-t border-slate-100 dark:border-slate-800 pt-6">
