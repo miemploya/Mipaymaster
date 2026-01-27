@@ -117,7 +117,12 @@ function isActive($page_name, $current_page) {
             <i data-lucide="banknote" class="w-5 h-5"></i> Payroll
         </a>
 
-        <!-- 5b. Loans -->
+        <!-- 5b. Leaves -->
+        <a href="leaves.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('leaves', $current); ?>">
+            <i data-lucide="calendar-off" class="w-5 h-5"></i> Leave Management
+        </a>
+
+        <!-- 5c. Loans -->
         <a href="loans.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('loans', $current); ?>">
             <i data-lucide="hand-coins" class="w-5 h-5"></i> Loans & Advances
         </a>

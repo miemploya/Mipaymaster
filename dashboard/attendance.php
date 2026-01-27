@@ -3,6 +3,68 @@ ini_set('display_errors', 1); ini_set('display_startup_errors', 1); error_report
 require_once '../includes/functions.php';
 require_login();
 $company_name = $_SESSION['company_name'] ?? 'My Company';
+$company_id = $_SESSION['company_id'];
+
+// --- FETCH DATA ---
+
+// 1. Get Policy & Method
+$stmt = $pdo->prepare("SELECT attendance_method FROM companies WHERE id = ?");
+$stmt->execute([$company_id]);
+$attendance_method = $stmt->fetchColumn() ?: 'manual';
+
+// 2. Get Records (Default to Today)
+$filter_date = $_GET['date'] ?? date('Y-m-d');
+$records_json = '[]';
+
+try {
+    // Fetch logs joined with employee data
+    $stmt = $pdo->prepare("
+        SELECT al.*, e.first_name, e.last_name, e.employee_id as emp_code, d.name as dept_name 
+        FROM attendance_logs al 
+        JOIN employees e ON al.employee_id = e.id 
+        LEFT JOIN departments d ON e.department_id = d.id 
+        WHERE al.company_id = ? AND al.date = ?
+    ");
+    $stmt->execute([$company_id, $filter_date]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $records = [];
+    foreach($rows as $r) {
+        $in = $r['check_in_time'] ? date('h:i A', strtotime($r['check_in_time'])) : '-';
+        $out = $r['check_out_time'] ? date('h:i A', strtotime($r['check_out_time'])) : '-';
+        
+        $hours = '0h';
+        if($r['check_in_time'] && $r['check_out_time']) {
+            $diff = strtotime($r['check_out_time']) - strtotime($r['check_in_time']);
+            $hours = round($diff / 3600, 1) . 'h';
+        }
+
+        $impact = 'None';
+        if ($r['final_deduction_amount'] > 0) $impact = 'Deduction';
+        // Bonus logic placeholder
+        
+        $records[] = [
+            'date' => $r['date'],
+            'id' => $r['emp_code'],
+            'name' => $r['first_name'] . ' ' . $r['last_name'],
+            'dept' => $r['dept_name'] ?? '-',
+            'in' => $in,
+            'out' => $out,
+            'hours' => $hours,
+            'status' => ucfirst($r['status']), // present, late, absent, etc
+            'overtime' => '0h', // Pending OT logic
+            'impact' => $impact
+        ];
+    }
+    
+    // If empty and it's today, maybe we want to show all employees as "Pending"? 
+    // For now, let's stick to showing logs.
+    
+    $records_json = json_encode($records);
+
+} catch (Exception $e) {
+    error_log("Attendance Fetch Error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -57,13 +119,8 @@ $company_name = $_SESSION['company_name'] ?? 'My Company';
                 showUploadModal: false,
                 showDeviceModal: false,
                 
-                dailyRecords: [
-                    { date: '2026-01-15', id: 'MIP-001', name: 'John Doe', dept: 'Engineering', in: '08:00 AM', out: '05:00 PM', hours: '9h', status: 'Present', overtime: '0h', impact: 'None' },
-                    { date: '2026-01-15', id: 'MIP-002', name: 'Jane Smith', dept: 'Marketing', in: '08:45 AM', out: '05:10 PM', hours: '8.5h', status: 'Late', overtime: '0h', impact: 'Deduction' },
-                    { date: '2026-01-15', id: 'MIP-003', name: 'Sam Wilson', dept: 'Sales', in: '-', out: '-', hours: '0h', status: 'Absent', overtime: '0h', impact: 'Deduction' },
-                    { date: '2026-01-15', id: 'MIP-004', name: 'Lisa Ray', dept: 'HR', in: '08:00 AM', out: '07:00 PM', hours: '11h', status: 'Present', overtime: '2h', impact: 'Bonus' },
-                    { date: '2026-01-15', id: 'MIP-005', name: 'Mike Ross', dept: 'Legal', in: '-', out: '-', hours: '0h', status: 'On Leave', overtime: '0h', impact: 'None' },
-                ],
+                dailyRecords: <?php echo $records_json; ?>,
+                policyMethod: '<?php echo $attendance_method; ?>',
 
                 devices: [
                     { name: 'Main Entrance', type: 'Fingerprint', location: 'Reception', ip: '192.168.1.20', status: 'Online', lastSync: '2 mins ago' },
@@ -257,7 +314,7 @@ $company_name = $_SESSION['company_name'] ?? 'My Company';
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
                         <i data-lucide="calendar" class="w-4 h-4"></i> Monthly Summary
                     </button>
-                    <button @click="currentTab = 'biometrics'" 
+                    <button @click="currentTab = 'biometrics'" x-show="policyMethod === 'biometric'"
                         :class="currentTab === 'biometrics' ? 'border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400 bg-brand-50/10' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:border-slate-300'" 
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
                         <i data-lucide="fingerprint" class="w-4 h-4"></i> Biometrics
@@ -276,6 +333,20 @@ $company_name = $_SESSION['company_name'] ?? 'My Company';
 
                 <!-- TAB 1: OVERVIEW -->
                 <div x-show="currentTab === 'overview'" x-transition.opacity>
+                    <!-- Policy Banner -->
+                    <div class="mb-6 px-4 py-3 rounded-lg border flex items-center gap-3"
+                         :class="{
+                            'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300': policyMethod === 'manual',
+                            'bg-purple-50 border-purple-200 text-purple-700 dark:bg-purple-900/20 dark:border-purple-800 dark:text-purple-300': policyMethod === 'self',
+                            'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/20 dark:border-indigo-800 dark:text-indigo-300': policyMethod === 'biometric'
+                         }">
+                        <i :data-lucide="policyMethod === 'manual' ? 'clipboard-list' : (policyMethod === 'self' ? 'smartphone' : 'fingerprint')" class="w-5 h-5"></i>
+                        <span class="text-sm font-medium">
+                            Current Mode: <span class="font-bold" x-text="policyMethod === 'manual' ? 'Manual Entry' : (policyMethod === 'self' ? 'Self Check-In' : 'Biometric Sync')"></span>
+                        </span>
+                        <a href="company.php?tab=attendance" class="text-xs underline ml-auto hover:text-brand-600">Change Policy</a>
+                    </div>
+
                     <!-- Top Controls (Card Wrapper) -->
                     <div class="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-6">
                         <div class="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
@@ -286,7 +357,7 @@ $company_name = $_SESSION['company_name'] ?? 'My Company';
                                     <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                         <i data-lucide="calendar" class="h-4 w-4 text-slate-400"></i>
                                     </div>
-                                    <input type="date" class="form-input pl-10 py-2.5 w-full sm:w-40 font-medium" value="2026-01-15">
+                                    <input type="date" class="form-input pl-10 py-2.5 w-full sm:w-40 font-medium" value="<?php echo $filter_date; ?>" @change="window.location.href='attendance.php?date=' + $event.target.value">
                                 </div>
                                 <div class="relative flex-1 min-w-[240px]">
                                     <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">

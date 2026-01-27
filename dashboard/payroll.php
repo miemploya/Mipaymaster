@@ -443,17 +443,17 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             </div>
                             <p class="text-xs text-slate-500 mt-2" x-text="payrollRun ? 'Draft generated, pending lock.' : 'No active run for this period.'"></p>
                         </div>
-                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                            <p class="text-xs font-bold text-slate-500 uppercase">Gross Pay</p>
-                            <h3 class="text-xl font-bold text-slate-900 dark:text-white mt-2" x-text="formatCurrency(totals.gross)"></h3>
+                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                            <p class="text-xs font-bold text-slate-500 uppercase truncate">Gross Pay</p>
+                            <h3 class="text-xl font-bold text-slate-900 dark:text-white mt-2 truncate" x-text="formatCurrency(totals.gross)" :title="formatCurrency(totals.gross)"></h3>
                         </div>
-                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                            <p class="text-xs font-bold text-red-500 uppercase">Total Deductions</p>
-                            <h3 class="text-xl font-bold text-red-600 dark:text-red-400 mt-2" x-text="formatCurrency(totals.deductions)"></h3>
+                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                            <p class="text-xs font-bold text-red-500 uppercase truncate">Total Deductions</p>
+                            <h3 class="text-xl font-bold text-red-600 dark:text-red-400 mt-2 truncate" x-text="formatCurrency(totals.deductions)" :title="formatCurrency(totals.deductions)"></h3>
                         </div>
-                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border-l-4 border-l-green-500 border-y border-r border-slate-200 dark:border-slate-800 shadow-sm">
-                            <p class="text-xs font-bold text-green-600 uppercase">Total Net Pay</p>
-                            <h3 class="text-xl font-bold text-green-700 dark:text-green-400 mt-2" x-text="formatCurrency(totals.net)"></h3>
+                        <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border-l-4 border-l-green-500 border-y border-r border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                            <p class="text-xs font-bold text-green-600 uppercase truncate">Total Net Pay</p>
+                            <h3 class="text-xl font-bold text-green-700 dark:text-green-400 mt-2 truncate" x-text="formatCurrency(totals.net)" :title="formatCurrency(totals.net)"></h3>
                         </div>
                     </div>
 
@@ -649,13 +649,13 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     
                     <!-- Totals Grid -->
                     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
-                            <p class="text-xs text-slate-500 uppercase">Gross Pay</p>
-                            <p class="text-lg font-bold text-slate-900 dark:text-white" x-text="formatCurrency(totals.gross)"></p>
+                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                            <p class="text-xs text-slate-500 uppercase truncate">Gross Pay</p>
+                            <p class="text-lg font-bold text-slate-900 dark:text-white truncate" x-text="formatCurrency(totals.gross)" :title="formatCurrency(totals.gross)"></p>
                         </div>
-                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
-                            <p class="text-xs text-slate-500 uppercase">Total Deductions</p>
-                            <p class="text-lg font-bold text-red-600 dark:text-red-400" x-text="formatCurrency(totals.deductions)"></p>
+                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                            <p class="text-xs text-slate-500 uppercase truncate">Total Deductions</p>
+                            <p class="text-lg font-bold text-red-600 dark:text-red-400 truncate" x-text="formatCurrency(totals.deductions)" :title="formatCurrency(totals.deductions)"></p>
                         </div>
                         <!-- Summaries below can be calculated from breakdown sum if needed, but for now we use placeholder or 0 if not pre-calc -->
                         <!-- Actually totals.deductions includes PAYE+Pension+NHIS. We can't split easily without looping. -->
@@ -663,9 +663,9 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <!-- Or better: We bind to specific sub-totals if we added them to totals response. I only added gross, deductions, net. -->
                         <!-- Suggestion: Just show gross, deductions, net for MVP reliability. -->
                         
-                         <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 col-span-2 bg-brand-50 dark:bg-brand-900/10 border-brand-200 dark:border-brand-900/30">
-                            <p class="text-xs text-brand-600 uppercase font-bold">Total Net Pay Cost</p>
-                            <p class="text-2xl font-bold text-brand-700 dark:text-brand-300" x-text="formatCurrency(totals.net)"></p>
+                         <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 col-span-2 bg-brand-50 dark:bg-brand-900/10 border-brand-200 dark:border-brand-900/30 overflow-hidden">
+                            <p class="text-xs text-brand-600 uppercase font-bold truncate">Total Net Pay Cost</p>
+                            <p class="text-2xl font-bold text-brand-700 dark:text-brand-300 truncate" x-text="formatCurrency(totals.net)" :title="formatCurrency(totals.net)"></p>
                         </div>
                     </div>
 

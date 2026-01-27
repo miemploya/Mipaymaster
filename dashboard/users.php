@@ -30,6 +30,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 if ($u_id) {
                     // Update
+                    // SECURITY CHECK: Get current role before update
+                    $stmt = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+                    $stmt->execute([$u_id]);
+                    $current_user_data = $stmt->fetch();
+                    
+                    if ($current_user_data && $current_user_data['role'] === 'super_admin') {
+                        throw new Exception("Super Admin accounts cannot be modified.");
+                    }
+
                     $sql = "UPDATE users SET first_name=?, last_name=?, email=?, role=?"; 
                     $params = [$fname, $lname, $email, $role];
                     
@@ -67,6 +76,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $u_id = $_POST['user_id'];
         $new_status = $_POST['status']; // 'active' or 'suspended'
         try {
+            // SECURITY CHECK
+            $stmt = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+            $stmt->execute([$u_id]);
+            $tgt = $stmt->fetch();
+            if ($tgt && $tgt['role'] === 'super_admin') throw new Exception("Super Admin accounts cannot be suspended.");
+
             $stmt = $pdo->prepare("UPDATE users SET status=? WHERE id=? AND company_id=?");
             $stmt->execute([$new_status, $u_id, $company_id]);
             $success_msg = "User status updated to $new_status.";
@@ -79,6 +94,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          try {
             // Prevent self-delete
             if ($u_id == $_SESSION['user_id']) throw new Exception("You cannot delete your own account.");
+            
+            // SECURITY CHECK
+            $stmt = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+            $stmt->execute([$u_id]);
+            $tgt = $stmt->fetch();
+            if ($tgt && $tgt['role'] === 'super_admin') throw new Exception("Super Admin accounts cannot be deleted.");
             
             $stmt = $pdo->prepare("DELETE FROM users WHERE id=? AND company_id=?");
             $stmt->execute([$u_id, $company_id]);
@@ -300,10 +321,13 @@ try {
                         <div>
                             <label class="block text-xs font-bold text-slate-500 mb-1">Role</label>
                             <select name="role" required class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-2 text-sm">
-                                <option value="admin" :selected="user.role === 'admin'">Admin</option>
-                                <option value="hr" :selected="user.role === 'hr'">HR Manager</option>
-                                <option value="finance" :selected="user.role === 'finance'">Finance</option>
+                                <option value="company_admin" :selected="user.role === 'company_admin'">Admin</option>
+                                <option value="hr_manager" :selected="user.role === 'hr_manager'">HR Manager</option>
                                 <option value="employee" :selected="user.role === 'employee'">Employee</option>
+                                <!-- Super Admin is hidden from selection but handled if existing -->
+                                <template x-if="user.role === 'super_admin'">
+                                    <option value="super_admin" selected>Super Admin</option>
+                                </template>
                             </select>
                         </div>
                         <div>

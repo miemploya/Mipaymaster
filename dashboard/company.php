@@ -807,6 +807,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $success_msg = "Behaviour settings updated.";
         } catch (PDOException $e) { $error_msg = "Error updating behaviours: " . $e->getMessage(); }
     }
+
+    // 7. ATTENDANCE POLICY (NEW)
+    elseif ($tab === 'attendance_save') {
+        $method = $_POST['attendance_method'] ?? 'manual';
+        // Policy fields
+        $check_in_start = $_POST['check_in_start'] ?? '08:00';
+        $check_in_end = $_POST['check_in_end'] ?? '09:00';
+        $check_out_start = $_POST['check_out_start'] ?? '17:00';
+        $check_out_end = $_POST['check_out_end'] ?? '18:00';
+        $grace = intval($_POST['grace_period'] ?? 15);
+        $enable_ip = isset($_POST['enable_ip']) ? 1 : 0;
+        $require_supervisor = isset($_POST['require_supervisor']) ? 1 : 0;
+        
+        try {
+            $pdo->beginTransaction();
+            
+            // 1. Update Company Method
+            $stmt = $pdo->prepare("UPDATE companies SET attendance_method = ? WHERE id = ?");
+            $stmt->execute([$method, $company_id]);
+            
+            // 2. Update/Create Policy
+            $check = $pdo->prepare("SELECT id FROM attendance_policies WHERE company_id = ?");
+            $check->execute([$company_id]);
+            if ($check->rowCount() == 0) {
+                 $stmt = $pdo->prepare("INSERT INTO attendance_policies (company_id, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_minutes, enable_ip_logging, require_supervisor_confirmation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                 $stmt->execute([$company_id, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor]);
+            } else {
+                 $stmt = $pdo->prepare("UPDATE attendance_policies SET check_in_start=?, check_in_end=?, check_out_start=?, check_out_end=?, grace_period_minutes=?, enable_ip_logging=?, require_supervisor_confirmation=? WHERE company_id=?");
+                 $stmt->execute([$check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $company_id]);
+            }
+            
+            $pdo->commit();
+            $success_msg = "Attendance policy updated.";
+            log_audit($company_id, $_SESSION['user_id'], 'UPDATE_ATTENDANCE_POLICY', "Updated attendance method to: $method");
+            header("Location: company.php?tab=attendance");
+            exit;
+            
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $error_msg = "Error updating attendance policy: " . $e->getMessage();
+        }
+    }
 }
 
 // --- FETCH DATA ---
@@ -1045,6 +1087,28 @@ try {
     }
 } catch(Exception $e) { /* ignore */ }
 
+// 6. Attendance Policy (NEW)
+$attendance_policy = [
+    'method' => $company['attendance_method'] ?? 'manual',
+    'check_in_start' => '08:00', 'check_in_end' => '09:00',
+    'check_out_start' => '17:00','check_out_end' => '18:00',
+    'grace_period' => 15, 'enable_ip' => 1, 'require_supervisor' => 1
+];
+try {
+    $stmt = $pdo->prepare("SELECT * FROM attendance_policies WHERE company_id = ?");
+    $stmt->execute([$company_id]);
+    $pol = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($pol) {
+        $attendance_policy['check_in_start'] = substr($pol['check_in_start'], 0, 5);
+        $attendance_policy['check_in_end'] = substr($pol['check_in_end'], 0, 5);
+        $attendance_policy['check_out_start'] = substr($pol['check_out_start'], 0, 5);
+        $attendance_policy['check_out_end'] = substr($pol['check_out_end'], 0, 5);
+        $attendance_policy['grace_period'] = (int)$pol['grace_period_minutes'];
+        $attendance_policy['enable_ip'] = (int)$pol['enable_ip_logging'];
+        $attendance_policy['require_supervisor'] = (int)$pol['require_supervisor_confirmation'];
+    }
+} catch (Exception $e) { /* ignore */ }
+
 
 ?>
 <!DOCTYPE html>
@@ -1115,6 +1179,16 @@ try {
                     email: <?php echo $behaviour['email_payslips'] ? 'true' : 'false'; ?>,
                     password: <?php echo $behaviour['password_protect_payslips'] ? 'true' : 'false'; ?>,
                     overtime: <?php echo $behaviour['enable_overtime'] ? 'true' : 'false'; ?>
+                },
+                attendance: {
+                    method: '<?php echo $attendance_policy['method']; ?>',
+                    check_in_start: '<?php echo $attendance_policy['check_in_start']; ?>',
+                    check_in_end: '<?php echo $attendance_policy['check_in_end']; ?>',
+                    check_out_start: '<?php echo $attendance_policy['check_out_start']; ?>',
+                    check_out_end: '<?php echo $attendance_policy['check_out_end']; ?>',
+                    grace: <?php echo $attendance_policy['grace_period']; ?>,
+                    ip: <?php echo $attendance_policy['enable_ip'] ? 'true' : 'false'; ?>,
+                    supervisor: <?php echo $attendance_policy['require_supervisor'] ? 'true' : 'false'; ?>
                 },
                 
                 // FORMS
@@ -1694,11 +1768,142 @@ try {
                             <button @click="currentTab = 'categories'" :class="currentTab === 'categories' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="list" class="w-4 h-4"></i> Categories</button>
                             <button @click="currentTab = 'statutory'" :class="currentTab === 'statutory' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="scale" class="w-4 h-4"></i> Statutory</button>
                             <button @click="currentTab = 'behaviour'" :class="currentTab === 'behaviour' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="sliders" class="w-4 h-4"></i> Behaviour</button>
+                            <button @click="currentTab = 'attendance'" :class="currentTab === 'attendance' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="clock" class="w-4 h-4"></i> Attendance Policy</button>
                         </div>
                     </div>
 
                     <!-- TABBED CONTENT AREA -->
                     <div class="mb-12">
+                        
+                        <!-- TAB 7: ATTENDANCE POLICY (NEW) -->
+                        <div x-show="currentTab === 'attendance'" x-cloak>
+                            <form method="POST" class="bg-white dark:bg-slate-950 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 p-8">
+                                <input type="hidden" name="tab" value="attendance_save">
+                                
+                                <div class="mb-8">
+                                    <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-2">Attendance Method Selection</h3>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Choose the primary way your company captures employee attendance.</p>
+                                    
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                        <!-- Manual -->
+                                        <label class="cursor-pointer relative group">
+                                            <input type="radio" name="attendance_method" value="manual" x-model="attendance.method" class="peer sr-only">
+                                            <div class="p-6 rounded-xl border-2 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 peer-checked:border-brand-600 peer-checked:bg-brand-50 dark:peer-checked:bg-brand-900/10 transition-all h-full flex flex-col items-center text-center">
+                                                <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4 text-slate-500 peer-checked:text-brand-600 peer-checked:bg-brand-100 dark:peer-checked:bg-brand-900/30 group-hover:scale-110 transition-transform">
+                                                    <i data-lucide="clipboard-list" class="w-6 h-6"></i>
+                                                </div>
+                                                <h4 class="font-bold text-slate-900 dark:text-white mb-2">Manual Entry</h4>
+                                                <p class="text-xs text-slate-500 leading-relaxed">Admin/HR manually records attendance. No employee interaction. Best for small teams.</p>
+                                            </div>
+                                            <div class="absolute top-4 right-4 text-brand-600 opacity-0 peer-checked:opacity-100 transition-opacity"><i data-lucide="check-circle-2" class="w-6 h-6 fill-current"></i></div>
+                                        </label>
+                                        
+                                        <!-- Self Check-In -->
+                                        <label class="cursor-pointer relative group">
+                                            <input type="radio" name="attendance_method" value="self" x-model="attendance.method" class="peer sr-only">
+                                            <div class="p-6 rounded-xl border-2 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 peer-checked:border-brand-600 peer-checked:bg-brand-50 dark:peer-checked:bg-brand-900/10 transition-all h-full flex flex-col items-center text-center">
+                                                <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4 text-slate-500 peer-checked:text-brand-600 peer-checked:bg-brand-100 dark:peer-checked:bg-brand-900/30 group-hover:scale-110 transition-transform">
+                                                    <i data-lucide="smartphone" class="w-6 h-6"></i>
+                                                </div>
+                                                <h4 class="font-bold text-slate-900 dark:text-white mb-2">Mobile Check-In</h4>
+                                                <p class="text-xs text-slate-500 leading-relaxed">Employees clock in/out via dashboard. Requires validation rules & audit logging.</p>
+                                            </div>
+                                             <div class="absolute top-4 right-4 text-brand-600 opacity-0 peer-checked:opacity-100 transition-opacity"><i data-lucide="check-circle-2" class="w-6 h-6 fill-current"></i></div>
+                                        </label>
+                                        
+                                        <!-- Biometric -->
+                                        <label class="cursor-pointer relative group">
+                                            <input type="radio" name="attendance_method" value="biometric" x-model="attendance.method" class="peer sr-only">
+                                            <div class="p-6 rounded-xl border-2 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 peer-checked:border-brand-600 peer-checked:bg-brand-50 dark:peer-checked:bg-brand-900/10 transition-all h-full flex flex-col items-center text-center">
+                                                <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4 text-slate-500 peer-checked:text-brand-600 peer-checked:bg-brand-100 dark:peer-checked:bg-brand-900/30 group-hover:scale-110 transition-transform">
+                                                    <i data-lucide="fingerprint" class="w-6 h-6"></i>
+                                                </div>
+                                                <h4 class="font-bold text-slate-900 dark:text-white mb-2">Biometric Sync</h4>
+                                                <p class="text-xs text-slate-500 leading-relaxed">Syncs with biometric devices using API. Automated logging with minimal interaction.</p>
+                                            </div>
+                                             <div class="absolute top-4 right-4 text-brand-600 opacity-0 peer-checked:opacity-100 transition-opacity"><i data-lucide="check-circle-2" class="w-6 h-6 fill-current"></i></div>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <!-- Configuration Panels -->
+                                <div class="bg-white dark:bg-slate-950">
+                                    <div x-show="attendance.method === 'manual'" x-transition class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 text-center">
+                                        <p class="text-sm text-slate-600 dark:text-slate-400">Manual entry is the default mode. No additional configuration is required.</p>
+                                    </div>
+                                    
+                                    <div x-show="attendance.method === 'self'" x-transition class="space-y-6">
+                                        <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
+                                            <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-brand-500"></i> Working Hours & Lateness</h4>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                <div>
+                                                    <label class="form-label">Earliest Check-In</label>
+                                                    <input type="time" name="check_in_start" x-model="attendance.check_in_start" class="form-input">
+                                                </div>
+                                                <div>
+                                                    <label class="form-label">Calculated Late After</label>
+                                                    <input type="time" name="check_in_end" x-model="attendance.check_in_end" class="form-input">
+                                                    <p class="text-xs text-amber-600 mt-1">Check-ins after this time are marked "Late".</p>
+                                                </div>
+                                                 <div>
+                                                    <label class="form-label">Earliest Check-Out (Without Penalty)</label>
+                                                    <input type="time" name="check_out_start" x-model="attendance.check_out_start" class="form-input">
+                                                </div>
+                                                <div>
+                                                    <label class="form-label">Latest Check-Out</label>
+                                                    <input type="time" name="check_out_end" x-model="attendance.check_out_end" class="form-input">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
+                                            <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="shield-check" class="w-4 h-4 text-brand-500"></i> Validation & Controls</h4>
+                                            <div class="space-y-4">
+                                                 <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-brand-500 transition-colors">
+                                                    <div>
+                                                        <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Grace Period</span>
+                                                        <span class="text-xs text-slate-500">Allow check-ins within X minutes of start without penalty.</span>
+                                                    </div>
+                                                    <div class="flex items-center gap-2">
+                                                        <input type="number" name="grace_period" x-model="attendance.grace" class="form-input w-20 text-center" min="0">
+                                                        <span class="text-xs text-slate-500">mins</span>
+                                                    </div>
+                                                </label>
+                                                
+                                                <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-brand-500 transition-colors">
+                                                    <div>
+                                                        <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Log IP Address & Device Info</span>
+                                                        <span class="text-xs text-slate-500">Capture location metrics for audit trail.</span>
+                                                    </div>
+                                                    <input type="checkbox" name="enable_ip" value="1" x-model="attendance.ip" class="w-5 h-5 text-brand-600 rounded focus:ring-brand-500">
+                                                </label>
+
+                                                <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-brand-500 transition-colors">
+                                                    <div>
+                                                        <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Supervisor Confirmation</span>
+                                                        <span class="text-xs text-slate-500">Require supervisor approval before payroll impact.</span>
+                                                    </div>
+                                                    <input type="checkbox" name="require_supervisor" value="1" x-model="attendance.supervisor" class="w-5 h-5 text-brand-600 rounded focus:ring-brand-500">
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div x-show="attendance.method === 'biometric'" x-transition class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 text-center">
+                                         <div class="flex justify-center mb-4"><i data-lucide="server" class="w-12 h-12 text-slate-400"></i></div>
+                                         <p class="text-sm text-slate-600 dark:text-slate-400 mb-4">Biometric integrations are configured in the <a href="attendance.php?tab=biometrics" class="text-brand-600 font-bold hover:underline">Attendance Module</a>.</p>
+                                         <p class="text-xs text-slate-500">Use this setting to declare Biometrics as the company's primary truth source for payroll.</p>
+                                    </div>
+                                    
+                                    <div class="mt-8 flex justify-end">
+                                        <button type="submit" class="px-6 py-2.5 bg-brand-600 text-white font-bold rounded-lg shadow-lg shadow-brand-500/30 hover:bg-brand-700 transition-all flex items-center gap-2">
+                                            <i data-lucide="save" class="w-4 h-4"></i> Save Policy
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+
                         <!-- TAB 1: PROFILE -->
                         <div x-show="currentTab === 'profile'" x-cloak>
                         <!-- Profile Form -->

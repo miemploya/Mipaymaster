@@ -23,8 +23,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 file_put_contents($loginDebugLog, date('[Y-m-d H:i:s] ') . "Database connected, querying user...\n", FILE_APPEND);
                 
-                $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
-                $stmt->execute([$email]);
+                $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? OR username = ?");
+                $stmt->execute([$email, $email]); // Using $email var for both input types
                 $user = $stmt->fetch();
                 
                 if (!$user) {
@@ -44,8 +44,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                         log_audit($user['company_id'], $user['id'], 'LOGIN', 'User logged in successfully');
 
-                        file_put_contents($loginDebugLog, date('[Y-m-d H:i:s] ') . "Session set, redirecting to dashboard...\n", FILE_APPEND);
-                        redirect('../dashboard/index.php');
+                        file_put_contents($loginDebugLog, date('[Y-m-d H:i:s] ') . "Session set, redirecting...\n", FILE_APPEND);
+                        
+                        if ($user['role'] === 'employee') {
+                            redirect('../dashboard/staff.php');
+                        } else {
+                            redirect('../dashboard/index.php');
+                        }
                     } else {
                         file_put_contents($loginDebugLog, date('[Y-m-d H:i:s] ') . "FAILED: Password verification failed for user {$user['id']}\n", FILE_APPEND);
                         set_flash_message('error', 'Invalid email or password.');
@@ -114,8 +119,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <form method="POST" action="" class="space-y-4">
             <div>
-                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email Address</label>
-                <input type="email" name="email" class="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all" placeholder="name@company.com" required>
+                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email or Employee ID</label>
+                <input type="text" name="email" class="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all" placeholder="name@company.com or MIP-001" required>
             </div>
             <div>
                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Password</label>

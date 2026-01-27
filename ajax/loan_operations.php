@@ -21,6 +21,17 @@ $action = $_POST['action'] ?? '';
 if ($action === 'create_loan') {
     try {
         $emp_id = $_POST['employee_id'];
+        
+        // SECURITY: If employee, force their own ID
+        if ($_SESSION['role'] === 'employee') {
+            // Fetch their employee ID
+            $stmt_e = $pdo->prepare("SELECT id FROM employees WHERE user_id = ? AND company_id = ?");
+            $stmt_e->execute([$_SESSION['user_id'], $company_id]);
+            $my_emp_id = $stmt_e->fetchColumn();
+            if (!$my_emp_id) throw new Exception("Employee record not found.");
+            $emp_id = $my_emp_id;
+        }
+
         $type = $_POST['loan_type'];
         $custom_type = ($type === 'other') ? $_POST['custom_type'] : null;
         $amount = floatval($_POST['principal_amount']);

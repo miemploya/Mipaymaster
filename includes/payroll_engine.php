@@ -396,6 +396,14 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $total_deductions = $tax_paye + $pension_emp + $nhis + $nhf;
             $net_pay = $adjusted_gross - $total_deductions;
 
+            // --- ATTENDANCE DEDUCTION LOGIC ---
+            $stmt_att = $pdo->prepare("SELECT SUM(final_deduction_amount) FROM attendance_logs WHERE employee_id = ? AND MONTH(date) = ? AND YEAR(date) = ?");
+            $stmt_att->execute([$emp['id'], $month, $year]);
+            $attendance_deduction = floatval($stmt_att->fetchColumn() ?: 0);
+            
+            $net_pay -= $attendance_deduction;
+            // ---------------------------------
+
             // --- LOAN DEDUCTION LOGIC ---
             // Fetch active approved loans
             $loan_deductions = [];
@@ -444,7 +452,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             // Let's add it to total_deductions for consistency in simple reports, 
             // BUT we must distinguish in Breakdown.
             // Decision: Add to total_deductions column for integrity check (Gross - Ded = Net).
-            $total_deductions_stored = $total_deductions + $total_loan_amount;
+            $total_deductions_stored = $total_deductions + $total_loan_amount + $attendance_deduction;
 
             $ins_entry->execute([
                 $run_id, $emp['id'], $adjusted_gross, $total_allowances, $total_deductions_stored, $net_pay
@@ -465,6 +473,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                     'nhf' => $nhf
                 ],
                 'loans' => $loan_deductions,
+                'attendance' => ['deduction' => $attendance_deduction],
                 'settings_used' => $settings
             ];
             

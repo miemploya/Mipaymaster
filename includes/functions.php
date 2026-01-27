@@ -35,8 +35,8 @@ function require_login() {
     if (!isset($_SESSION['user_id'])) {
         redirect('/Mipaymaster/auth/login.php');
     }
-    // Robustness: Restore company_id if missing but user_id exists
-    if (!isset($_SESSION['company_id']) || !$_SESSION['company_id']) {
+    // Robustness: Restore company_id OR role if missing but user_id exists
+    if (empty($_SESSION['company_id']) || empty($_SESSION['role'])) {
         global $pdo;
         $stmt = $pdo->prepare("SELECT company_id, role, first_name FROM users WHERE id = ?");
         $stmt->execute([$_SESSION['user_id']]);
@@ -45,6 +45,10 @@ function require_login() {
             $_SESSION['company_id'] = $user['company_id'];
             $_SESSION['role'] = $user['role'];
             $_SESSION['user_name'] = $user['first_name'];
+        } else {
+            // User ID in session but not in DB? Force logout.
+            session_destroy();
+            redirect('/Mipaymaster/auth/login.php');
         }
     }
 }
