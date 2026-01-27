@@ -233,6 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute($params);
                 
                 $_SESSION['flash_success'] = "Company profile updated.";
+                log_audit($company_id, $_SESSION['user_id'], 'UPDATE_COMPANY', "Updated company profile: $name");
                 header("Location: company.php?tab=profile");
                 exit;
             } catch (PDOException $e) { $error_msg = "Error: " . $e->getMessage(); }
@@ -260,7 +261,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("INSERT INTO departments (company_id, name, code, is_active) VALUES (?, ?, ?, ?)");
                     $stmt->execute([$company_id, $name, $code, $active]);
                     $_SESSION['flash_success'] = "Department created.";
+                    log_audit($company_id, $_SESSION['user_id'], 'CREATE_DEPARTMENT', "Created department: $name");
                 }
+                if ($dept_id) log_audit($company_id, $_SESSION['user_id'], 'UPDATE_DEPARTMENT', "Updated department: $name");
                 header("Location: company.php?tab=departments");
                 exit;
             } catch (PDOException $e) { $error_msg = "Error saving department: " . $e->getMessage(); }
@@ -278,6 +281,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("DELETE FROM departments WHERE id=? AND company_id=?");
                 $stmt->execute([$dept_id, $company_id]);
                 $_SESSION['flash_success'] = "Department deleted.";
+                log_audit($company_id, $_SESSION['user_id'], 'DELETE_DEPARTMENT', "Deleted department ID: $dept_id");
                 header("Location: company.php?tab=departments");
                 exit;
             }
@@ -324,7 +328,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("INSERT INTO $table (company_id, name, calculation_mode, amount, percentage, percentage_base, is_taxable, is_pensionable, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
                     $stmt->execute([$company_id, $name, $method, $amount, $percentage, $base, $taxable, $pensionable, $active]);
                     $_SESSION['flash_success'] = "Item created.";
+                    log_audit($company_id, $_SESSION['user_id'], 'CREATE_PAYROLL_ITEM', "Created payroll item: $name");
                 }
+                if ($item_id) log_audit($company_id, $_SESSION['user_id'], 'UPDATE_PAYROLL_ITEM', "Updated payroll item: $name");
                 header("Location: company.php?tab=items&item_tab=" . $type); 
                 exit;
              } catch (PDOException $e) { $error_msg = "Error saving item: " . $e->getMessage(); }
@@ -340,6 +346,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              $stmt = $pdo->prepare("DELETE FROM $table WHERE id=? AND company_id=?");
              $stmt->execute([$id, $company_id]);
              $_SESSION['flash_success'] = "Item deleted.";
+             log_audit($company_id, $_SESSION['user_id'], 'DELETE_PAYROLL_ITEM', "Deleted payroll item ID: $id");
              header("Location: company.php?tab=items&item_tab=" . $type);
              exit;
          } catch (PDOException $e) { $error_msg = "Error deleting item: " . $e->getMessage(); }
@@ -733,6 +740,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
+
+                // AUTO-REGENERATE DRAFT PAYROLLS
+                // If a category changes, any DRAFT payroll for this company should be recalculated to reflect the new Gross.
+                try {
+                    $stmt_drafts = $pdo->prepare("SELECT period_month, period_year FROM payroll_runs WHERE company_id=? AND status='draft'");
+                    $stmt_drafts->execute([$company_id]);
+                    $drafts = $stmt_drafts->fetchAll(PDO::FETCH_ASSOC);
+
+                    if ($drafts) {
+                        require_once '../includes/payroll_engine.php';
+                        foreach ($drafts as $d) {
+                            run_monthly_payroll($company_id, $d['period_month'], $d['period_year'], $_SESSION['user_id']);
+                        }
+                        $success_msg .= " (Payroll drafts updated)";
+                    }
+                } catch (Exception $ex) {
+                    // Fail silently on regen to avoid scaring user if main save worked
+                    error_log("Payroll Regen Error: " . $ex->getMessage());
+                }
+
             } catch (PDOException $e) { 
                 $pdo->rollBack();
                 $error_msg = "Error saving category: " . $e->getMessage(); 

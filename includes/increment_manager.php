@@ -11,7 +11,7 @@ class IncrementManager {
     /**
      * Add a new salary increment request
      */
-    public function add_increment($employee_id, $type, $value, $effective_from, $reason, $effective_to = null) {
+    public function add_increment($employee_id, $type, $value, $effective_from, $reason, $effective_to = null, $letter_path = null) {
         // Validation
         if (!in_array($type, ['fixed', 'percentage', 'override'])) {
             return ['status' => false, 'message' => 'Invalid adjustment type'];
@@ -22,10 +22,10 @@ class IncrementManager {
 
         try {
             $stmt = $this->pdo->prepare("INSERT INTO employee_salary_adjustments 
-                (employee_id, adjustment_type, adjustment_value, effective_from, effective_to, reason, approval_status, is_active) 
-                VALUES (?, ?, ?, ?, ?, ?, 'pending', 1)");
+                (employee_id, adjustment_type, adjustment_value, effective_from, effective_to, reason, approval_status, is_active, letter_path) 
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?)");
             
-            $stmt->execute([$employee_id, $type, $value, $effective_from, $effective_to, $reason]);
+            $stmt->execute([$employee_id, $type, $value, $effective_from, $effective_to, $reason, $letter_path]);
             
             return ['status' => true, 'id' => $this->pdo->lastInsertId(), 'message' => 'Increment request submitted for approval'];
         } catch (Exception $e) {
@@ -97,11 +97,52 @@ class IncrementManager {
             AND is_active = 1
             AND effective_from <= ?
             AND (effective_to IS NULL OR effective_to = '0000-00-00' OR effective_to >= ?)
-            ORDER BY effective_from DESC, id DESC 
-            LIMIT 1");
+            ORDER BY effective_from ASC, id ASC");
         
         $stmt->execute([$employee_id, $date, $date]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    /**
+     * Rollback an approved increment
+     */
+    public function rollback_increment($id, $user_id, $reason) {
+        try {
+            // Check if exists and is approved
+            $stmt = $this->pdo->prepare("SELECT id FROM employee_salary_adjustments WHERE id = ? AND approval_status = 'approved'");
+            $stmt->execute([$id]);
+            if (!$stmt->fetch()) {
+                return ['status' => false, 'message' => 'Increment not found or not approved'];
+            }
+
+            $update = $this->pdo->prepare("UPDATE employee_salary_adjustments 
+                SET approval_status = 'rolled_back', 
+                    is_active = 0,
+                    rolled_back_by = ?, 
+                    rolled_back_at = NOW(),
+                    rollback_reason = ?
+                WHERE id = ?");
+            $update->execute([$user_id, $reason, $id]);
+            
+            return ['status' => true, 'message' => 'Increment rolled back successfully'];
+        } catch (Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage()];
+        }
+    }
+    /**
+     * Delete a pending increment
+     */
+    public function delete_increment($id) {
+        try {
+            $stmt = $this->pdo->prepare("DELETE FROM employee_salary_adjustments WHERE id = ? AND approval_status = 'pending'");
+            $stmt->execute([$id]);
+            
+            if ($stmt->rowCount() > 0) {
+                return ['status' => true, 'message' => 'Increment request deleted'];
+            }
+            return ['status' => false, 'message' => 'Increment not found or not pending'];
+        } catch (Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage()];
+        }
     }
 }
 ?>

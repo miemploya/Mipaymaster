@@ -11,6 +11,11 @@ $next_of_kin = null;
 $is_edit = false;
 
 // Fetch Categories for Dropdown
+// Fetch Departments for Dropdown
+$stmt = $pdo->prepare("SELECT id, name FROM departments WHERE company_id = ? AND is_active = 1 ORDER BY name ASC");
+$stmt->execute([$company_id]);
+$departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 // Fetch Categories for Dropdown
 $stmt = $pdo->prepare("SELECT id, name as title FROM salary_categories WHERE company_id = ?");
 $stmt->execute([$company_id]);
@@ -47,6 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $address = clean_input($_POST['address']);
     
     // 2. Employment
+    $dept_id = !empty($_POST['department_id']) ? $_POST['department_id'] : null;
     $salary_cat = !empty($_POST['salary_category_id']) ? $_POST['salary_category_id'] : null;
     $status = clean_input($_POST['employment_status']);
     $join_date = $_POST['date_of_joining'];
@@ -66,26 +72,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($is_edit) {
             $stmt = $pdo->prepare("UPDATE employees SET 
-                category_id=?, first_name=?, last_name=?, email=?, phone=?, gender=?, address=?, 
+                department_id=?, category_id=?, first_name=?, last_name=?, email=?, phone=?, gender=?, address=?, 
                 employment_status=?, date_of_joining=?, bank_name=?, account_number=?, account_name=?, 
                 pension_pfa=?, pension_rsa=? 
                 WHERE id=? AND company_id=?");
             $stmt->execute([
-                $salary_cat, $first_name, $last_name, $email, $phone, $gender, $address,
+                $dept_id, $salary_cat, $first_name, $last_name, $email, $phone, $gender, $address,
                 $status, $join_date, $bank_name, $acc_num, $acc_name, $pfa, $rsa,
                 $emp_id, $company_id
             ]);
             $employee_id = $emp_id;
+            log_audit($company_id, $_SESSION['user_id'], 'UPDATE_EMPLOYEE', "Updated employee details: $first_name $last_name (ID: $emp_id)");
         } else {
             $stmt = $pdo->prepare("INSERT INTO employees 
-                (company_id, category_id, payroll_id, first_name, last_name, email, phone, gender, address, 
+                (company_id, department_id, category_id, payroll_id, first_name, last_name, email, phone, gender, address, 
                 employment_status, date_of_joining, bank_name, account_number, account_name, pension_pfa, pension_rsa) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([
-                $company_id, $salary_cat, $payroll_id, $first_name, $last_name, $email, $phone, $gender, $address,
+                $company_id, $dept_id, $salary_cat, $payroll_id, $first_name, $last_name, $email, $phone, $gender, $address,
                 $status, $join_date, $bank_name, $acc_num, $acc_name, $pfa, $rsa
             ]);
             $employee_id = $pdo->lastInsertId();
+            log_audit($company_id, $_SESSION['user_id'], 'CREATE_EMPLOYEE', "Created new employee: $first_name $last_name (ID: $employee_id)");
         }
 
         // NEXT OF KIN Handing
@@ -229,6 +237,17 @@ $current_page = 'employees';
                     <div class="form-section">
                         <h3>Employment Details</h3>
                         <div class="flex gap-4">
+                            <div class="form-group" style="flex:1;">
+                                <label class="form-label">Department</label>
+                                <select name="department_id" class="form-input" required>
+                                    <option value="">Select Department...</option>
+                                    <?php foreach ($departments as $dept): ?>
+                                        <option value="<?php echo $dept['id']; ?>" <?php echo ($employee['department_id'] ?? '') == $dept['id'] ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($dept['name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
                             <div class="form-group" style="flex:1;">
                                 <label class="form-label">Salary Category</label>
                                 <select name="salary_category_id" class="form-input" required>

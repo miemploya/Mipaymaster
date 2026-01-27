@@ -105,8 +105,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $success_msg = "Behaviour settings updated.";
         } catch (PDOException $e) { $error_msg = "Error updating behaviours: " . $e->getMessage(); }
     }
+    // 3. USER MANAGEMENT (NEW)
+    // 3. (REMOVED) User Management moved to users.php
 }
-
 // --- FETCH DATA ---
 
 // 1. Statutory
@@ -134,6 +135,7 @@ try {
         $pdo->prepare("INSERT INTO payroll_behaviours (company_id) VALUES (?)")->execute([$company_id]);
     }
 } catch (Exception $e) { /* ignore */ }
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -300,6 +302,7 @@ try {
                 <div class="mb-8 overflow-x-auto pb-2">
                     <div class="flex gap-3 min-w-max">
                         <button @click="currentTab = 'profile'" :class="currentTab === 'profile' ? 'bg-indigo-600 text-white shadow-indigo-500/30 hover:bg-indigo-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 border border-slate-200 dark:border-slate-700 hover:border-indigo-300'" class="px-5 py-2.5 text-sm font-bold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="user" class="w-4 h-4"></i> Profile</button>
+
                         <button @click="currentTab = 'general'" :class="currentTab === 'general' ? 'bg-blue-600 text-white shadow-blue-500/30 hover:bg-blue-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 hover:border-blue-300'" class="px-5 py-2.5 text-sm font-bold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="globe" class="w-4 h-4"></i> General</button>
                         <button @click="currentTab = 'statutory'" :class="currentTab === 'statutory' ? 'bg-emerald-600 text-white shadow-emerald-500/30 hover:bg-emerald-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 border border-slate-200 dark:border-slate-700 hover:border-emerald-300'" class="px-5 py-2.5 text-sm font-bold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="scale" class="w-4 h-4"></i> Statutory</button>
                         <button @click="currentTab = 'behaviour'" :class="currentTab === 'behaviour' ? 'bg-amber-600 text-white shadow-amber-500/30 hover:bg-amber-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 border border-slate-200 dark:border-slate-700 hover:border-amber-300'" class="px-5 py-2.5 text-sm font-bold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="sliders" class="w-4 h-4"></i> Behaviour</button>
@@ -347,6 +350,8 @@ try {
                         </form>
                     </div>
                 </div>
+
+
 
                 <!-- TAB 1: GENERAL SETTINGS -->
                 <div x-show="currentTab === 'general'" x-cloak x-transition.opacity>
@@ -557,35 +562,7 @@ try {
                     </div>
                 </div>
 
-                <!-- TAB 9: AUDIT LOGS -->
-                <div x-show="currentTab === 'audit'" x-cloak x-transition.opacity>
-                    <div class="max-w-6xl">
-                         <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-                            <table class="w-full text-left text-sm">
-                                <thead class="bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-500">
-                                    <tr>
-                                        <th class="p-4 font-medium">Date</th>
-                                        <th class="p-4 font-medium">User</th>
-                                        <th class="p-4 font-medium">Action</th>
-                                        <th class="p-4 font-medium">Module</th>
-                                        <th class="p-4 font-medium">Details</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                                    <template x-for="log in auditLogs" :key="log.date">
-                                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
-                                            <td class="p-4 font-mono text-xs text-slate-500" x-text="log.date"></td>
-                                            <td class="p-4 font-medium" x-text="log.user"></td>
-                                            <td class="p-4 font-bold" x-text="log.action"></td>
-                                            <td class="p-4 text-slate-500" x-text="log.module"></td>
-                                            <td class="p-4 text-slate-500 italic" x-text="log.details"></td>
-                                        </tr>
-                                    </template>
-                                </tbody>
-                            </table>
-                         </div>
-                    </div>
-                </div>
+
                 
             </main>
         </div>

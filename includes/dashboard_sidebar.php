@@ -11,6 +11,8 @@ $page_map = [
     'payroll' => 'payroll',
     'increments' => 'increments',
     'report' => 'reports',
+    'audit' => 'audit',
+    'users' => 'users',
     'wallet' => 'wallet',
     'billing' => 'billing',
     'tax_calculator' => 'tax_calculator',
@@ -115,7 +117,12 @@ function isActive($page_name, $current_page) {
             <i data-lucide="banknote" class="w-5 h-5"></i> Payroll
         </a>
 
-        <!-- 5b. Increments -->
+        <!-- 5b. Loans -->
+        <a href="loans.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('loans', $current); ?>">
+            <i data-lucide="hand-coins" class="w-5 h-5"></i> Loans & Advances
+        </a>
+
+        <!-- 5c. Increments -->
         <a href="increments.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('increments', $current); ?>">
             <i data-lucide="trending-up" class="w-5 h-5"></i> Increments
         </a>
@@ -130,6 +137,8 @@ function isActive($page_name, $current_page) {
         <a href="report.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('reports', $current); ?>">
             <i data-lucide="file-bar-chart" class="w-5 h-5"></i> Reports
         </a>
+
+
 
         <!-- 8. Disbursement & Wallet -->
         <a href="wallet.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('wallet', $current); ?>">
@@ -151,9 +160,27 @@ function isActive($page_name, $current_page) {
             <i data-lucide="headset" class="w-5 h-5"></i> Miemploya Support
         </a>
 
-        <a href="settings.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('settings', $current); ?>">
-            <i data-lucide="settings" class="w-5 h-5"></i> Settings
-        </a>
+        <!-- 10. System Administration (Expandable) -->
+        <div x-data="{ open: <?php echo in_array($current, ['users', 'settings', 'audit']) ? 'true' : 'false'; ?> }">
+            <button @click="open = !open" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo in_array($current, ['users', 'settings', 'audit']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
+                <div class="flex items-center gap-3">
+                    <i data-lucide="shield-check" class="w-5 h-5"></i>
+                    <span>System Admin</span>
+                </div>
+                <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': open}"></i>
+            </button>
+            <div x-show="open" x-collapse class="pl-4 mt-1 space-y-1">
+                <a href="users.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('users', $current); ?>">
+                    <i data-lucide="users" class="w-4 h-4"></i> Users
+                </a>
+                <a href="settings.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('settings', $current); ?>">
+                    <i data-lucide="settings" class="w-4 h-4"></i> Settings
+                </a>
+                <a href="audit.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('audit', $current); ?>">
+                    <i data-lucide="shield-alert" class="w-4 h-4"></i> Audit Trail
+                </a>
+            </div>
+        </div>
 
         <!-- User Profile (Bottom) with Dynamic Photo -->
         <div class="p-4 border-t border-slate-200 dark:border-slate-800 mt-auto">

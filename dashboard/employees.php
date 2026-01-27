@@ -166,37 +166,51 @@ try {
 
 
 // --- UPLOAD HELPER ---
-function upload_file($file_array, $key = null, $folder = 'uploads') {
+// --- UPLOAD HELPER ---
+function upload_file($file_array, $key = null, $folder = 'uploads', $max_size = 2097152, $compress = false) {
     $target_dir = "../" . $folder . "/";
     if (!file_exists($target_dir)) mkdir($target_dir, 0777, true);
     
     // Check if it's a simple file or array file
     if ($key !== null) {
-        // Array upload handling (e.g., edu_certificate[0])
         if (!isset($file_array['name'][$key]) || $file_array['error'][$key] != 0) return null;
         $name = $file_array['name'][$key];
         $tmp = $file_array['tmp_name'][$key];
+        $size = $file_array['size'][$key];
     } else {
-        // Simple upload
         if (!isset($file_array['name']) || $file_array['error'] != 0) return null;
         $name = $file_array['name'];
         $tmp = $file_array['tmp_name'];
+        $size = $file_array['size'];
     }
 
     $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
     $allowed = ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'];
     if (!in_array($ext, $allowed)) return null;
 
-    // Size Check (Max 2MB)
-    // Note: 'size' might be array or int depending on Key
-    // Size Check (Max 2MB)
-    // Note: 'size' might be array or int depending on Key
-    $size = ($key !== null) ? $file_array['size'][$key] : $file_array['size'];
-    if ($size > 2 * 1024 * 1024) return null;
+    // Size Check
+    if ($size > $max_size) return null;
 
     $new_name = uniqid() . '.' . $ext;
     $target_file = $target_dir . $new_name;
 
+    // Compression Logic (Images Only)
+    if ($compress && in_array($ext, ['jpg', 'jpeg', 'png'])) {
+        $info = getimagesize($tmp);
+        if ($info['mime'] == 'image/jpeg') $image = imagecreatefromjpeg($tmp);
+        elseif ($info['mime'] == 'image/png') $image = imagecreatefrompng($tmp);
+        else $image = null;
+
+        if ($image) {
+            // Save with 70% quality (approx 30% compression trigger)
+            if(imagejpeg($image, $target_file, 70)) {
+                imagedestroy($image);
+                return $folder . "/" . $new_name;
+            }
+        }
+    }
+
+    // Fallback or Non-Image
     if (move_uploaded_file($tmp, $target_file)) {
         return $folder . "/" . $new_name;
     }
@@ -275,8 +289,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Generate ID & Handle Uploads
                     $payroll_id = 'MIP-' . str_pad($emp_id, 4, '0', STR_PAD_LEFT);
                     
-                    $photo_path = isset($_FILES['photo_upload']) ? upload_file($_FILES['photo_upload'], null, "uploads/employees/$emp_id/profile") : null;
-                    $id_doc_path = isset($_FILES['id_document']) ? upload_file($_FILES['id_document'], null, "uploads/employees/$emp_id/documents") : null;
+                    $photo_path = isset($_FILES['photo_upload']) ? upload_file($_FILES['photo_upload'], null, "uploads/employees/$emp_id/profile", 2097152, true) : null;
+                    $id_doc_path = isset($_FILES['id_document']) ? upload_file($_FILES['id_document'], null, "uploads/employees/$emp_id/documents", 2097152, true) : null;
 
                     $upd_sql = "UPDATE employees SET payroll_id=?";
                     $upd_params = [$payroll_id];
@@ -293,8 +307,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // UPDATE
                     $emp_id = preg_replace('/[^0-9]/', '', $_POST['employee_id']);
                     
-                    $photo_path = isset($_FILES['photo_upload']) ? upload_file($_FILES['photo_upload'], null, "uploads/employees/$emp_id/profile") : null;
-                    $id_doc_path = isset($_FILES['id_document']) ? upload_file($_FILES['id_document'], null, "uploads/employees/$emp_id/documents") : null;
+                    $photo_path = isset($_FILES['photo_upload']) ? upload_file($_FILES['photo_upload'], null, "uploads/employees/$emp_id/profile", 2097152, true) : null;
+                    $id_doc_path = isset($_FILES['id_document']) ? upload_file($_FILES['id_document'], null, "uploads/employees/$emp_id/documents", 2097152, true) : null;
                     
                     // Build Update SQL dynamically to handle file preservation
                     $sql = "UPDATE employees SET 
@@ -320,6 +334,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("DELETE FROM employee_education WHERE employee_id=?")->execute([$emp_id]);
                     $pdo->prepare("DELETE FROM employee_work_history WHERE employee_id=?")->execute([$emp_id]);
                     $pdo->prepare("DELETE FROM employee_guarantors WHERE employee_id=?")->execute([$emp_id]);
+                    $pdo->prepare("DELETE FROM employee_additional_qualifications WHERE employee_id=?")->execute([$emp_id]);
                     $pdo->prepare("DELETE FROM next_of_kin WHERE employee_id=?")->execute([$emp_id]);
 
                     $_SESSION['flash_success'] = "Employee profile updated successfully.";
@@ -336,7 +351,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if(!empty($inst)) {
                             // Check for new upload, otherwise use existing path
                             $cert_path = isset($_FILES['edu_certificate']) && !empty($_FILES['edu_certificate']['name'][$k]) 
-                                ? upload_file($_FILES['edu_certificate'], $k, "uploads/employees/$new_emp_id/education") 
+                                ? upload_file($_FILES['edu_certificate'], $k, "uploads/employees/$new_emp_id/education", 5242880, true) 
                                 : ($_POST['edu_existing_path'][$k] ?? null);
                                 
                             $stmt->execute([$new_emp_id, $inst, $_POST['edu_qualification'][$k], (int)$_POST['edu_year'][$k], $_POST['edu_course'][$k], $cert_path]);
@@ -349,7 +364,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach($_POST['work_employer'] as $k => $emp) {
                         if($emp) {
                             $doc_path = isset($_FILES['work_document']) && !empty($_FILES['work_document']['name'][$k])
-                                ? upload_file($_FILES['work_document'], $k, "uploads/employees/$new_emp_id/work") 
+                                ? upload_file($_FILES['work_document'], $k, "uploads/employees/$new_emp_id/work", 5242880, true) 
                                 : ($_POST['work_existing_path'][$k] ?? null);
                                 
                             $stmt->execute([$new_emp_id, $emp, $_POST['work_role'][$k], $_POST['work_duration'][$k], $doc_path]);
@@ -366,6 +381,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 : ($_POST['guarantor_existing_path'][$k] ?? null);
                                 
                             $stmt->execute([$new_emp_id, $name, $_POST['guarantor_rel'][$k], $_POST['guarantor_phone'][$k], $_POST['guarantor_address'][$k], $_POST['guarantor_job'][$k], $id_path]);
+                        }
+                    }
+                }
+                // Additional Qualifications
+                if(isset($_POST['additional_title'])) {
+                    $stmt = $pdo->prepare("INSERT INTO employee_additional_qualifications (employee_id, title, document_path) VALUES (?, ?, ?)");
+                    foreach($_POST['additional_title'] as $k => $title) {
+                        if($title) {
+                            $doc_path = isset($_FILES['additional_document']) && !empty($_FILES['additional_document']['name'][$k])
+                                ? upload_file($_FILES['additional_document'], $k, "uploads/employees/$new_emp_id/qualifications", 5242880, true) 
+                                : ($_POST['additional_existing_path'][$k] ?? null);
+                                
+                            $stmt->execute([$new_emp_id, $title, $doc_path]);
                         }
                     }
                 }
@@ -446,10 +474,22 @@ foreach ($employees_raw as $emp) {
     $stmt->execute([$emp['id']]);
     $emp['guarantors'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Additional Qualifications
+    $stmt = $pdo->prepare("SELECT * FROM employee_additional_qualifications WHERE employee_id=?");
+    $stmt->execute([$emp['id']]);
+    $emp['additional_qualifications'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute([$emp['id']]);
+    $emp['guarantors'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
     // NOK
     $stmt = $pdo->prepare("SELECT * FROM next_of_kin WHERE employee_id=?");
     $stmt->execute([$emp['id']]);
     $emp['nok'] = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Loans
+    $stmt = $pdo->prepare("SELECT * FROM loans WHERE employee_id=? ORDER BY created_at DESC");
+    $stmt->execute([$emp['id']]);
+    $emp['loans'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Normalize Logic
     $emp['status'] = ucfirst($emp['status'] ?? 'Active');
@@ -482,6 +522,8 @@ foreach ($js_employees as &$emp) {
     if (!isset($emp['education'])) $emp['education'] = [];
     if (!isset($emp['work_history'])) $emp['work_history'] = [];
     if (!isset($emp['guarantors'])) $emp['guarantors'] = [];
+    if (!isset($emp['additional_qualifications'])) $emp['additional_qualifications'] = [];
+    if (!isset($emp['loans'])) $emp['loans'] = [];
 }
 unset($emp);
 ?>
@@ -537,6 +579,25 @@ unset($emp);
                 employees: <?php echo json_encode($js_employees); ?>,
                 salaryCategories: <?php echo json_encode($categories); ?>,
                 salaryComponents: <?php echo json_encode($salary_components); ?>,
+                departmentsList: <?php echo json_encode($departments); ?>,
+                
+                // FILTER STATE
+                searchQuery: '',
+                selectedDept: '',
+
+                // COMPUTED: Filtered List
+                get filteredEmployees() {
+                    return this.employees.filter(emp => {
+                        const q = this.searchQuery.toLowerCase();
+                        const matchesSearch = !q || 
+                            (emp.name && emp.name.toLowerCase().includes(q)) ||
+                            (emp.id_display && emp.id_display.toLowerCase().includes(q));
+                        
+                        const matchesDept = !this.selectedDept || (emp.department === this.selectedDept);
+
+                        return matchesSearch && matchesDept;
+                    });
+                },
                 
                 // Computed Salary Breakdown
                 get calculatedSalary() {
@@ -596,6 +657,7 @@ unset($emp);
                 educationList: [{institution: '', qualification: '', year: '', course: ''}],
                 workList: [{employer: '', role: '', duration: ''}],
                 guarantorList: [{name: '', relationship: '', phone: '', address: '', occupation: ''}],
+                additionalList: [{title: '', document_path: ''}],
 
                 addEducation() { this.educationList.push({institution: '', qualification: '', year: '', course: ''}); },
                 removeEducation(index) { this.educationList.splice(index, 1); },
@@ -605,6 +667,9 @@ unset($emp);
 
                 addGuarantor() { this.guarantorList.push({name: '', relationship: '', phone: '', address: '', occupation: ''}); },
                 removeGuarantor(index) { this.guarantorList.splice(index, 1); },
+
+                addAdditional() { this.additionalList.push({title: '', document_path: ''}); },
+                removeAdditional(index) { this.additionalList.splice(index, 1); },
 
                 // LOGIC
                 openProfile(emp) {
@@ -667,6 +732,7 @@ unset($emp);
                             if(data.education && data.education.length) this.educationList = data.education;
                             if(data.work_history && data.work_history.length) this.workList = data.work_history;
                             if(data.guarantors && data.guarantors.length) this.guarantorList = data.guarantors;
+                            if(data.additional_qualifications && data.additional_qualifications.length) this.additionalList = data.additional_qualifications;
                             
                             // NOK
                             if(data.nok) {
@@ -696,6 +762,7 @@ unset($emp);
                     this.educationList = [{institution: '', qualification: '', year: '', course: ''}];
                     this.workList = [{employer: '', role: '', duration: ''}];
                     this.guarantorList = [{name: '', relationship: '', phone: '', address: '', occupation: ''}];
+                    this.additionalList = [{title: '', document_path: ''}];
                 },
 
                 async fetchIncrements(empId) {
@@ -888,13 +955,14 @@ unset($emp);
                     <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                         <div class="flex items-center gap-2 bg-white dark:bg-slate-950 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 w-full md:w-auto">
                             <i data-lucide="search" class="w-4 h-4 text-slate-400"></i>
-                            <input type="text" placeholder="Search Name / ID..." class="bg-transparent text-sm focus:outline-none text-slate-900 dark:text-white w-full">
+                            <input type="text" x-model="searchQuery" placeholder="Search Name / ID..." class="bg-transparent text-sm focus:outline-none text-slate-900 dark:text-white w-full">
                         </div>
                         <div class="flex gap-2 w-full md:w-auto">
-                            <select class="px-3 py-2 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-600 dark:text-slate-400 focus:outline-none">
-                                <option>All Departments</option>
-                                <option>Engineering</option>
-                                <option>Sales</option>
+                            <select x-model="selectedDept" class="px-3 py-2 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-600 dark:text-slate-400 focus:outline-none">
+                                <option value="">All Departments</option>
+                                <template x-for="dept in departmentsList" :key="dept">
+                                    <option :value="dept" x-text="dept"></option>
+                                </template>
                             </select>
                             <button @click="view = 'add'" class="flex items-center gap-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 rounded-lg text-sm font-bold hover:opacity-90 transition-opacity whitespace-nowrap">
                                 <i data-lucide="plus" class="w-4 h-4"></i> Add Employee
@@ -919,7 +987,7 @@ unset($emp);
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                                <template x-for="emp in employees" :key="emp.id">
+                                <template x-for="emp in filteredEmployees" :key="emp.id">
                                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
                                         <!-- Photo Data -->
                                         <td class="px-6 py-4">
@@ -958,6 +1026,17 @@ unset($emp);
 
                 <!-- VIEW 2: ADD EMPLOYEE WIZARD (9 STEPS) -->
                 <div x-show="view === 'add'" x-cloak class="max-w-4xl mx-auto">
+                    <!-- Discontinue / Cancel Button Header -->
+                    <div class="flex justify-between items-center mb-6">
+                         <div>
+                            <h3 class="text-xl font-bold text-slate-900 dark:text-white" x-text="formMode === 'edit' ? 'Edit Employee Profile' : 'New Employee Onboarding'"></h3>
+                            <p class="text-sm text-slate-500" x-text="formMode === 'edit' ? 'Update employee information and documents' : 'Follow the steps to onboard a new employee'"></p>
+                         </div>
+                         <button type="button" @click="resetForm(); view = 'list'" class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-500 hover:text-red-600 hover:border-red-200 transition-colors shadow-sm font-medium">
+                            <i data-lucide="x-circle" class="w-4 h-4"></i> Discontinue
+                         </button>
+                    </div>
+
                     <!-- Wizard Steps Header -->
                     <div class="flex justify-between items-center mb-8 overflow-x-auto pb-2 scrollbar-hide">
                         <template x-for="(stepName, index) in steps" :key="index">
@@ -1022,11 +1101,15 @@ unset($emp);
                                     <div class="flex items-center gap-4 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/50">
                                         <div class="flex-1">
                                             <p class="text-sm text-slate-900 dark:text-white font-medium">Upload Valid ID</p>
+                                            <p class="text-xs text-slate-500">Accepted: JPG, PNG, PDF (Max 2MB)</p>
                                         </div>
-                                        <label class="px-4 py-2 text-sm text-brand-600 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:border-brand-500 transition-colors flex items-center gap-2 cursor-pointer">
-                                            <i data-lucide="upload" class="w-4 h-4"></i> Choose File
-                                            <input type="file" name="id_document" class="hidden">
-                                        </label>
+                                        <div x-data="{ idFileName: '' }" class="contents">
+                                            <label class="px-4 py-2 text-sm text-brand-600 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:border-brand-500 transition-colors flex items-center gap-2 cursor-pointer">
+                                                <i data-lucide="upload" class="w-4 h-4"></i> 
+                                                <span x-text="idFileName || 'Choose File'"></span>
+                                                <input type="file" name="id_document" class="hidden" @change="idFileName = $event.target.files[0].name">
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
 
@@ -1170,12 +1253,15 @@ unset($emp);
                                             <div><label class="form-label">Year</label><input type="number" name="edu_year[]" class="form-input" x-model="edu.year"></div>
                                             <div class="col-span-2"><label class="form-label">Course</label><input type="text" name="edu_course[]" class="form-input capitalize" x-model="edu.course"></div>
                                             <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3 flex items-center justify-between">
-                                                <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
-                                                    <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="edu.certificate_path ? 'Change Certificate' : 'Upload Certificate'"></span>
-                                                    <input type="file" name="edu_certificate[]" class="hidden">
-                                                    <!-- Hidden input to preserve existing path -->
-                                                    <input type="hidden" name="edu_existing_path[]" :value="edu.certificate_path">
-                                                </label>
+                                                <div>
+                                                    <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
+                                                        <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="edu.newFileName ? edu.newFileName : (edu.certificate_path ? 'Change Certificate' : 'Upload Certificate')"></span>
+                                                        <input type="file" name="edu_certificate[]" class="hidden" @change="edu.newFileName = $event.target.files[0].name" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx">
+                                                        <!-- Hidden input to preserve existing path -->
+                                                        <input type="hidden" name="edu_existing_path[]" :value="edu.certificate_path">
+                                                    </label>
+                                                    <p class="text-[10px] text-slate-400 mt-1">Supported: JPG, PNG, PDF, DOCX (Max 5MB)</p>
+                                                </div>
                                                 <template x-if="edu.certificate_path">
                                                     <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
                                                 </template>
@@ -1187,6 +1273,38 @@ unset($emp);
                                 <button type="button" @click="addEducation()" class="w-full py-2 border-2 border-dashed border-slate-300 dark:border-slate-700 text-slate-500 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors flex items-center justify-center gap-2">
                                     <i data-lucide="plus" class="w-4 h-4"></i> Add Another Education
                                 </button>
+                            </div>
+                            <!-- Additional Qualifications Section -->
+                            <div class="mt-8 border-t border-slate-100 dark:border-slate-800 pt-6">
+                                <h4 class="text-sm font-bold text-slate-900 dark:text-white mb-4 uppercase tracking-wide">Additional Certifications / Documents</h4>
+                                <div class="space-y-6">
+                                    <template x-for="(add, index) in additionalList" :key="index">
+                                        <div class="p-4 border border-slate-200 dark:border-slate-700 rounded-lg relative bg-slate-50 dark:bg-slate-900/50">
+                                            <div class="grid grid-cols-1 gap-4">
+                                                <div><label class="form-label">Document Title</label><input type="text" name="additional_title[]" class="form-input capitalize" x-model="add.title" placeholder="e.g. Professional Certification"></div>
+                                                <div class="border-t border-slate-200 dark:border-slate-700 pt-3 flex items-center justify-between">
+                                                    <div>
+                                                        <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
+                                                            <i data-lucide="upload" class="w-4 h-4"></i> 
+                                                            <span x-text="add.newFileName ? add.newFileName : (add.document_path ? 'Change Document' : 'Upload Document')"></span>
+                                                            <input type="file" name="additional_document[]" class="hidden" @change="add.newFileName = $event.target.files[0].name" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
+                                                            <!-- Hidden input to preserve existing path -->
+                                                            <input type="hidden" name="additional_existing_path[]" :value="add.document_path">
+                                                        </label>
+                                                        <p class="text-[10px] text-slate-400 mt-1">JPG, PNG, PDF, DOC, XLS (Max 5MB)</p>
+                                                    </div>
+                                                    <template x-if="add.document_path">
+                                                        <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                            <button type="button" @click="removeAdditional(index)" class="absolute top-2 right-2 text-slate-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                        </div>
+                                    </template>
+                                    <button type="button" @click="addAdditional()" class="w-full py-2 border-2 border-dashed border-slate-300 dark:border-slate-700 text-slate-500 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors flex items-center justify-center gap-2">
+                                        <i data-lucide="plus" class="w-4 h-4"></i> Add Another Document
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -1201,12 +1319,15 @@ unset($emp);
                                             <div><label class="form-label">Job Title</label><input type="text" name="work_role[]" class="form-input capitalize" x-model="work.role"></div>
                                             <div><label class="form-label">Duration</label><input type="text" name="work_duration[]" placeholder="e.g. 2019-2023" class="form-input" x-model="work.duration"></div>
                                             <div class="col-span-2 border-t border-slate-100 dark:border-slate-800 pt-3 flex items-center justify-between">
-                                                <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
-                                                    <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="work.document_path ? 'Change Document' : 'Upload Document'"></span>
-                                                    <input type="file" name="work_document[]" class="hidden">
-                                                    <!-- Hidden input to preserve existing path -->
-                                                    <input type="hidden" name="work_existing_path[]" :value="work.document_path">
-                                                </label>
+                                                <div>
+                                                    <label class="flex items-center gap-2 text-sm text-brand-600 cursor-pointer w-fit">
+                                                        <i data-lucide="upload" class="w-4 h-4"></i> <span x-text="work.newFileName ? work.newFileName : (work.document_path ? 'Change Document' : 'Upload Document')"></span>
+                                                        <input type="file" name="work_document[]" class="hidden" @change="work.newFileName = $event.target.files[0].name" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx">
+                                                        <!-- Hidden input to preserve existing path -->
+                                                        <input type="hidden" name="work_existing_path[]" :value="work.document_path">
+                                                    </label>
+                                                    <p class="text-[10px] text-slate-400 mt-1">Supported: JPG, PNG, PDF, DOCX (Max 5MB)</p>
+                                                </div>
                                                 <template x-if="work.document_path">
                                                     <span class="text-xs text-green-600 font-bold flex items-center gap-1"><i data-lucide="check" class="w-3 h-3"></i> Uploaded</span>
                                                 </template>
@@ -1350,7 +1471,7 @@ unset($emp);
                     <div class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm min-h-[500px]">
                         <div class="sticky top-0 z-10 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md rounded-t-2xl border-b border-slate-100 dark:border-slate-800 p-2">
                             <div class="flex p-1 bg-slate-100/50 dark:bg-slate-900/50 rounded-xl overflow-x-auto gap-1">
-                                <template x-for="tab in ['Overview', 'Payroll', 'Increments', 'Attendance', 'Documents']">
+                                <template x-for="tab in ['Overview', 'Payroll', 'Increments', 'Loans', 'Attendance', 'Documents']">
                                     <button @click="profileTab = tab.toLowerCase()" 
                                             :class="profileTab === tab.toLowerCase() ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm ring-1 ring-slate-200 dark:ring-slate-700' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-200/50 dark:hover:bg-slate-800/50'"
                                             class="flex-1 min-w-[100px] py-2 px-4 rounded-lg text-sm font-semibold transition-all duration-200 whitespace-nowrap"
@@ -1539,6 +1660,55 @@ unset($emp);
                                 </div>
                             </div>
 
+                            <!-- LOANS TAB -->
+                            <div x-show="profileTab === 'loans'" x-transition.opacity.duration.300ms>
+                                <div class="flex items-center justify-between mb-6">
+                                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">Loan History</h3>
+                                    <a href="loans.php" class="text-sm text-brand-600 font-medium hover:underline flex items-center gap-1">
+                                        Manage Loans <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                                    </a>
+                                </div>
+                                <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                                    <table class="w-full text-left text-sm">
+                                        <thead class="bg-slate-50 dark:bg-slate-900/50 text-slate-500 font-medium border-b border-slate-100 dark:border-slate-800">
+                                            <tr>
+                                                <th class="p-4">Date</th>
+                                                <th class="p-4">Type</th>
+                                                <th class="p-4">Principal</th>
+                                                <th class="p-4">Balance</th>
+                                                <th class="p-4">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                            <template x-for="loan in selectedEmployee?.loans || []" :key="loan.id">
+                                                <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                                    <td class="p-4 text-slate-600 dark:text-slate-400" x-text="new Date(loan.created_at).toLocaleDateString()"></td>
+                                                    <td class="p-4 capitalize text-slate-900 dark:text-white">
+                                                        <span x-text="loan.loan_type === 'other' ? loan.custom_type : loan.loan_type"></span>
+                                                    </td>
+                                                    <td class="p-4 font-mono font-medium text-slate-900 dark:text-white" x-text="'₦ ' + Number(loan.principal_amount).toLocaleString()"></td>
+                                                    <td class="p-4 font-mono text-slate-500" x-text="'₦ ' + Number(loan.balance).toLocaleString()"></td>
+                                                    <td class="p-4">
+                                                        <span :class="{
+                                                            'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400': loan.status === 'pending',
+                                                            'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400': loan.status === 'approved' || loan.status === 'running',
+                                                            'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400': loan.status === 'completed',
+                                                            'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400': loan.status === 'rejected'
+                                                        }" class="px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wide" x-text="loan.status"></span>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                            <tr x-show="!selectedEmployee?.loans?.length">
+                                                <td colspan="5" class="p-12 text-center text-slate-500 italic">
+                                                    <i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 text-slate-300"></i>
+                                                    No loan history found for this employee.
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
                             <!-- OTHER PLACEHOLDERS -->
                             <!-- DOCUMENTS TAB -->
                             <div x-show="profileTab === 'documents'" x-transition.opacity.duration.300ms>
@@ -1562,7 +1732,7 @@ unset($emp);
                                                     </div>
                                                 </div>
                                                 <template x-if="selectedEmployee?.id_document_path">
-                                                    <a :href="'../' + selectedEmployee.id_document_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-md border border-brand-200 transition-colors">
+                                                    <a :href="'../' + selectedEmployee.id_document_path" download target="_blank" class="px-3 py-1.5 text-xs font-bold text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-md border border-brand-200 transition-colors">
                                                         View / Download
                                                     </a>
                                                 </template>
@@ -1583,7 +1753,7 @@ unset($emp);
                                                 <a :href="'../' + selectedEmployee.photo_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-md border border-brand-200 transition-colors">
                                                     View
                                                 </a>
-                                                <a :href="'../' + selectedEmployee.photo_path" download class="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 transition-colors">
+                                                <a :href="'../' + selectedEmployee.photo_path" download target="_blank" class="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 transition-colors">
                                                     Download
                                                 </a>
                                             </div>
@@ -1611,7 +1781,7 @@ unset($emp);
                                                                     <p class="text-xs text-slate-500" x-text="edu.qualification"></p>
                                                                 </div>
                                                             </div>
-                                                            <a :href="'../' + edu.certificate_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200 transition-colors">
+                                                            <a :href="'../' + edu.certificate_path" download target="_blank" class="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200 transition-colors">
                                                                 Download
                                                             </a>
                                                         </div>
@@ -1640,7 +1810,7 @@ unset($emp);
                                                                     <p class="text-xs text-slate-500" x-text="work.role"></p>
                                                                 </div>
                                                             </div>
-                                                            <a :href="'../' + work.document_path" target="_blank" class="px-3 py-1.5 text-xs font-bold text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md border border-amber-200 transition-colors">
+                                                            <a :href="'../' + work.document_path" download target="_blank" class="px-3 py-1.5 text-xs font-bold text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md border border-amber-200 transition-colors">
                                                                 Download
                                                             </a>
                                                         </div>
@@ -1650,7 +1820,34 @@ unset($emp);
                                         </div>
                                     </template>
 
-                                    <!-- 4. Guarantor Details & IDs -->
+                                    <!-- 4. Additional Qualifications -->
+                                    <template x-if="selectedEmployee?.additional_qualifications && selectedEmployee.additional_qualifications.length > 0">
+                                        <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                                                <i data-lucide="award" class="w-4 h-4 text-purple-500"></i> Additional Certifications
+                                            </h3>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                <template x-for="add in selectedEmployee.additional_qualifications">
+                                                    <div class="p-4 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                                                        <div class="flex items-center gap-3">
+                                                            <div class="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center text-purple-600 dark:text-purple-400">
+                                                                <i data-lucide="file-badge-2" class="w-5 h-5"></i>
+                                                            </div>
+                                                            <div>
+                                                                <p class="font-bold text-slate-900 dark:text-white text-sm" x-text="add.title || 'Document'"></p>
+                                                                <p class="text-xs text-slate-500">Uploaded</p>
+                                                            </div>
+                                                        </div>
+                                                        <a :href="'../' + add.document_path" download target="_blank" class="px-3 py-1.5 text-xs font-bold text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-md border border-purple-200 transition-colors">
+                                                            Download
+                                                        </a>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    
+                                    <!-- 5. Guarantor Details & IDs -->
                                     <template x-if="selectedEmployee?.guarantors && selectedEmployee.guarantors.length > 0">
                                         <div class="bg-slate-50 dark:bg-slate-900/30 rounded-xl p-6 border border-slate-100 dark:border-slate-800 mb-6">
                                             <h3 class="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4 flex items-center gap-2">

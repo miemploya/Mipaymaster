@@ -42,6 +42,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['company_id'] = $user['company_id'];
                         $_SESSION['user_name'] = $user['first_name'];
                         
+                        log_audit($user['company_id'], $user['id'], 'LOGIN', 'User logged in successfully');
+
                         file_put_contents($loginDebugLog, date('[Y-m-d H:i:s] ') . "Session set, redirecting to dashboard...\n", FILE_APPEND);
                         redirect('../dashboard/index.php');
                     } else {

@@ -36,6 +36,34 @@ try {
     )");
 } catch (Exception $e) { /* ignore */ }
 
+// --- UPLOAD HELPER (Shared Logic) ---
+function upload_file($file_array, $max_size = 3145728) {
+    // 3MB Limit
+    $target_dir = "../uploads/increments/";
+    if (!file_exists($target_dir)) mkdir($target_dir, 0777, true);
+    
+    if (!isset($file_array['name']) || $file_array['error'] != 0) return null;
+    $name = $file_array['name'];
+    $tmp = $file_array['tmp_name'];
+    $size = $file_array['size'];
+
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    
+    // Explicitly exclude MP3/MP4
+    if (in_array($ext, ['mp3', 'mp4'])) return null;
+    
+    // Size Check
+    if ($size > $max_size) return null;
+
+    $new_name = uniqid() . '.' . $ext;
+    $target_file = $target_dir . $new_name;
+
+    if (move_uploaded_file($tmp, $target_file)) {
+        return "uploads/increments/" . $new_name;
+    }
+    return null;
+}
+
 // Handle Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -49,8 +77,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $effective_date = $_POST['effective_from'];
                 $reason = clean_input($_POST['reason']);
                 
-                $res = $incManager->add_increment($employee_id, $type, $value, $effective_date, $reason, null);
+                // Handle File Upload
+                $letter_path = null;
+                if (isset($_FILES['increment_letter']) && $_FILES['increment_letter']['error'] == 0) {
+                     $letter_path = upload_file($_FILES['increment_letter']);
+                     if (!$letter_path && $_FILES['increment_letter']['size'] > 0) {
+                         // Failed validation (size or type)
+                         throw new Exception("File upload failed. Max 3MB, no MP3/MP4 allowed.");
+                     }
+                }
+
+                $res = $incManager->add_increment($employee_id, $type, $value, $effective_date, $reason, null, $letter_path);
                 if ($res['status']) {
+                    log_audit($company_id, $_SESSION['user_id'], 'CREATE_INCREMENT', "Created increment for Emp ID: $employee_id. Type: $type, Value: $value");
                     set_flash_message('success', "Increment request created successfully.");
                 } else {
                     set_flash_message('error', "Error: " . $res['message']);
@@ -67,6 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $res = $incManager->approve_increment($inc_id, $_SESSION['user_id']);
                 if ($res['status']) {
+                     log_audit($company_id, $_SESSION['user_id'], 'APPROVE_INCREMENT', "Approved increment ID: $inc_id");
                      set_flash_message('success', "Increment approved successfully.");
                 } else {
                      set_flash_message('error', "Error: " . $res['message']);
@@ -76,9 +116,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $inc_id = $_POST['increment_id'];
                 $res = $incManager->reject_increment($inc_id, $_SESSION['user_id']);
                 if ($res['status']) {
+                     log_audit($company_id, $_SESSION['user_id'], 'REJECT_INCREMENT', "Rejected increment ID: $inc_id");
                      set_flash_message('success', "Increment rejected.");
                 } else {
                      set_flash_message('error', "Error: " . $res['message']);
+                }
+            }
+            elseif ($action === 'rollback') {
+                $inc_id = $_POST['increment_id'];
+                $reason = clean_input($_POST['rollback_reason']);
+                
+                if (empty($reason)) {
+                    set_flash_message('error', "Reason is required for rollback.");
+                } else {
+                    $res = $incManager->rollback_increment($inc_id, $_SESSION['user_id'], $reason);
+                    if ($res['status']) {
+                        log_audit($company_id, $_SESSION['user_id'], 'ROLLBACK_INCREMENT', "Rolled back increment ID: $inc_id. Reason: $reason");
+                        set_flash_message('success', "Increment rolled back successfully.");
+                    } else {
+                        set_flash_message('error', "Error: " . $res['message']);
+                    }
+                }
+            }
+            elseif ($action === 'delete_pending') {
+                $inc_id = $_POST['increment_id'];
+                $res = $incManager->delete_increment($inc_id);
+                if ($res['status']) {
+                    log_audit($company_id, $_SESSION['user_id'], 'DELETE_INCREMENT', "Deleted pending increment ID: $inc_id");
+                    set_flash_message('success', "Increment deleted.");
+                } else {
+                    set_flash_message('error', "Error: " . $res['message']);
                 }
             }
         }
@@ -183,7 +250,7 @@ $current_page = 'increments';
             </button>
         </div>
 
-        <main class="flex-1 overflow-y-auto p-6 lg:p-8" x-data="{ tab: 'pending', modalOpen: false }">
+        <main class="flex-1 overflow-y-auto p-6 lg:p-8" x-data="{ tab: 'pending', modalOpen: false, rollbackModalOpen: false, selectedRollbackId: null }">
             <?php display_flash_message(); ?>
 
             <!-- Tabs -->
@@ -217,6 +284,7 @@ $current_page = 'increments';
                                     <th class="px-6 py-3 font-medium">Type</th>
                                     <th class="px-6 py-3 font-medium text-right">Value</th>
                                     <th class="px-6 py-3 font-medium">Effective Date</th>
+                                    <th class="px-6 py-3 font-medium">Letter</th>
                                     <th class="px-6 py-3 font-medium">Reason</th>
                                     <th class="px-6 py-3 font-medium text-right">Actions</th>
                                 </tr>
@@ -237,6 +305,15 @@ $current_page = 'increments';
                                     <td class="px-6 py-4 text-slate-600">
                                         <?php echo date('M d, Y', strtotime($inc['effective_from'])); ?>
                                     </td>
+                                    <td class="px-6 py-4 text-center">
+                                        <?php if (!empty($inc['letter_path'])): ?>
+                                            <a href="../<?php echo htmlspecialchars($inc['letter_path']); ?>" download target="_blank" class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors" title="Download Letter">
+                                                <i data-lucide="file-text" class="w-4 h-4"></i>
+                                            </a>
+                                        <?php else: ?>
+                                            <span class="text-slate-400">-</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td class="px-6 py-4 text-slate-500 text-xs max-w-xs truncate">
                                         <?php echo htmlspecialchars($inc['reason'] ?? '-'); ?>
                                     </td>
@@ -253,6 +330,13 @@ $current_page = 'increments';
                                             <input type="hidden" name="increment_id" value="<?php echo $inc['id']; ?>">
                                             <button type="submit" class="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg" title="Reject">
                                                 <i data-lucide="x" class="w-4 h-4"></i>
+                                            </button>
+                                        </form>
+                                        <form method="POST" onsubmit="return confirm('Delete this pending request? This cannot be undone.');">
+                                            <input type="hidden" name="action" value="delete_pending">
+                                            <input type="hidden" name="increment_id" value="<?php echo $inc['id']; ?>">
+                                            <button type="submit" class="p-2 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-lg" title="Delete">
+                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
                                             </button>
                                         </form>
                                     </td>
@@ -274,6 +358,7 @@ $current_page = 'increments';
                                 <th class="px-6 py-3 font-medium">Type</th>
                                 <th class="px-6 py-3 font-medium text-right">Value</th>
                                 <th class="px-6 py-3 font-medium">Effective</th>
+                                <th class="px-6 py-3 font-medium">Letter</th>
                                 <th class="px-6 py-3 font-medium">Status</th>
                                 <th class="px-6 py-3 font-medium">Processed By</th>
                             </tr>
@@ -289,9 +374,21 @@ $current_page = 'increments';
                                     <?php if($h['adjustment_type'] == 'percentage') echo '+' . $h['adjustment_value'] . '%'; else echo '₦' . number_format($h['adjustment_value'], 2); ?>
                                 </td>
                                 <td class="px-6 py-4 text-slate-500"><?php echo date('M d, Y', strtotime($h['effective_from'])); ?></td>
+                                <td class="px-6 py-4 text-center">
+                                    <?php if (!empty($h['letter_path'])): ?>
+                                        <a href="../<?php echo htmlspecialchars($h['letter_path']); ?>" download target="_blank" class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors" title="Download Letter">
+                                            <i data-lucide="file-text" class="w-4 h-4"></i>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="text-slate-400">-</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td class="px-6 py-4">
                                     <?php if($h['approval_status'] == 'approved'): ?>
                                         <span class="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">Approved</span>
+                                        <button @click="rollbackModalOpen = true; selectedRollbackId = <?php echo $h['id']; ?>" class="ml-2 text-xs text-red-600 hover:text-red-800 underline">Rollback</button>
+                                    <?php elseif($h['approval_status'] == 'rolled_back'): ?>
+                                        <span class="px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-bold" title="<?php echo htmlspecialchars($h['rollback_reason']); ?>">Rolled Back</span>
                                     <?php else: ?>
                                         <span class="px-2 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold">Rejected</span>
                                     <?php endif; ?>
@@ -314,10 +411,13 @@ $current_page = 'increments';
                         <h3 class="font-bold text-lg text-slate-900 dark:text-white">New Quantity/Rate Adjustment</h3>
                         <button @click="modalOpen = false" class="text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
                     </div>
-                    <form method="POST" class="p-6">
+                    <form method="POST" class="p-6" enctype="multipart/form-data">
                         <input type="hidden" name="action" value="add_increment">
                         
                         <div class="space-y-4">
+                            <!-- ... existing fields ... -->
+                            
+                            <!-- Inserted by tool, re-stating for context if needed, but primarily adding file input -->
                             <div x-data="{ 
                                 search: '', 
                                 open: false, 
@@ -384,6 +484,23 @@ $current_page = 'increments';
                             </div>
 
                             <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Approved Increment Letter</label>
+                                <div class="relative group">
+                                    <input type="file" name="increment_letter" id="increment_letter" 
+                                           class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 dark:file:bg-brand-900/30 dark:file:text-brand-400"
+                                           accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.txt,.xlsx,.xls,.ppt,.pptx"
+                                           @change="
+                                                const file = $event.target.files[0];
+                                                if(file) {
+                                                    if(file.size > 3145728) { alert('File is too large. Max 3MB.'); $event.target.value = ''; }
+                                                    else if(file.name.match(/\.(mp3|mp4)$/i)) { alert('Audio/Video files not allowed.'); $event.target.value = ''; }
+                                                }
+                                           ">
+                                </div>
+                                <p class="text-xs text-slate-500 mt-1">Max Size: 3MB. Allowed: All documents/images (No MP3/MP4).</p>
+                            </div>
+
+                            <div>
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Reason</label>
                                 <textarea name="reason" rows="2" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm p-2.5" placeholder="e.g. Annual Review, Promotion..."></textarea>
                             </div>
@@ -392,6 +509,29 @@ $current_page = 'increments';
                         <div class="mt-6 flex justify-end gap-3">
                             <button type="button" @click="modalOpen = false" class="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50">Cancel</button>
                             <button type="submit" class="px-4 py-2 bg-brand-600 text-white rounded-lg font-bold hover:bg-brand-700 shadow-sm">Create Request</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Rollback Modal -->
+            <div x-show="rollbackModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                <div class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-md p-6 transform transition-all" @click.away="rollbackModalOpen = false">
+                    <h3 class="text-xl font-bold text-slate-900 dark:text-white mb-4">Rollback Increment</h3>
+                    <p class="text-slate-500 text-sm mb-4">Are you sure you want to rollback this approved increment? This will reverse the salary adjustment.</p>
+                    
+                    <form method="POST">
+                        <input type="hidden" name="action" value="rollback">
+                        <input type="hidden" name="increment_id" :value="selectedRollbackId">
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Reason for Rollback <span class="text-red-500">*</span></label>
+                            <textarea name="rollback_reason" required rows="3" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="Please state why..."></textarea>
+                        </div>
+                        
+                        <div class="flex justify-end gap-3">
+                            <button type="button" @click="rollbackModalOpen = false" class="px-4 py-2 border border-slate-300 rounded-lg">Cancel</button>
+                            <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold">Rollback</button>
                         </div>
                     </form>
                 </div>

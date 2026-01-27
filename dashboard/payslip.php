@@ -97,12 +97,24 @@ if (!$ps) die("Payslip not found or access denied.");
         </div>
 
         <?php 
-        // Calculate Basic from Totals (Basic = Gross - Allowances)
-        $basic = $ps['gross_salary'] - $ps['total_allowances'];
+        $breakdown = json_decode($ps['salary_breakdown'] ?? '{}', true);
+        
+        // Extract Earnings
+        $basic = $breakdown['basic'] ?? 0;
+        $housing = $breakdown['housing'] ?? 0;
+        $transport = $breakdown['transport'] ?? 0;
+        $other = $breakdown['other_allowance'] ?? 0;
+        $overtime = $breakdown['overtime'] ?? 0;
+        
+        // Extract Deductions
+        $paye = $breakdown['paye'] ?? 0;
+        $pension = $breakdown['pension'] ?? 0;
+        $nhis = $breakdown['nhis'] ?? 0;
+        $loan = $breakdown['loan'] ?? 0; // Using 'loan' from breakdown if available, else 0
         ?>
 
         <!-- Tables -->
-        <div class="flex gap-4" style="align-items: flex-start;">
+        <div class="flex gap-4" style="align-items: flex-start; display:flex;">
             <!-- Earnings -->
             <div style="flex:1;">
                 <h4 style="margin-bottom: 0.5rem; color: #64748b;">Earnings</h4>
@@ -112,9 +124,25 @@ if (!$ps) die("Payslip not found or access denied.");
                         <td class="text-right">₦<?php echo number_format($basic, 2); ?></td>
                     </tr>
                     <tr>
-                        <td>Total Allowances</td>
-                        <td class="text-right">₦<?php echo number_format($ps['total_allowances'], 2); ?></td>
+                        <td>Housing Allowance</td>
+                        <td class="text-right">₦<?php echo number_format($housing, 2); ?></td>
                     </tr>
+                    <tr>
+                        <td>Transport Allowance</td>
+                        <td class="text-right">₦<?php echo number_format($transport, 2); ?></td>
+                    </tr>
+                    <?php if($other > 0): ?>
+                    <tr>
+                        <td>Other Allowances</td>
+                        <td class="text-right">₦<?php echo number_format($other, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php if($overtime > 0): ?>
+                    <tr>
+                        <td>Overtime</td>
+                        <td class="text-right">₦<?php echo number_format($overtime, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
                     <tr class="total-row">
                         <td>Total Gross</td>
                         <td class="text-right">₦<?php echo number_format($ps['gross_salary'], 2); ?></td>
@@ -127,9 +155,25 @@ if (!$ps) die("Payslip not found or access denied.");
                 <h4 style="margin-bottom: 0.5rem; color: #64748b;">Deductions</h4>
                 <table class="earnings-table">
                     <tr>
-                        <td>Combined Deductions (Tax, Pension, etc.)</td>
-                        <td class="text-right">₦<?php echo number_format($ps['total_deductions'], 2); ?></td>
+                        <td>PAYE Tax</td>
+                        <td class="text-right">₦<?php echo number_format($paye, 2); ?></td>
                     </tr>
+                    <tr>
+                        <td>Pension (8%)</td>
+                        <td class="text-right">₦<?php echo number_format($pension, 2); ?></td>
+                    </tr>
+                    <?php if($nhis > 0): ?>
+                    <tr>
+                        <td>NHIS</td>
+                        <td class="text-right">₦<?php echo number_format($nhis, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php if($loan > 0): ?>
+                    <tr>
+                        <td>Loan Repayment</td>
+                        <td class="text-right">₦<?php echo number_format($loan, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
                     <tr class="total-row" style="background: #fff1f2;">
                         <td>Total Deductions</td>
                         <td class="text-right" style="color: #be123c;">- ₦<?php echo number_format($ps['total_deductions'], 2); ?></td>

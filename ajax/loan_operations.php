@@ -1,0 +1,126 @@
+<?php
+require_once '../config/db.php';
+require_once '../includes/functions.php';
+
+// Enable error reporting for debug (but return JSON)
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+header('Content-Type: application/json');
+
+if (!is_logged_in()) {
+    echo json_encode(['status' => false, 'message' => 'Unauthorized']);
+    exit;
+}
+
+$company_id = $_SESSION['company_id'];
+$user_id = $_SESSION['user_id'];
+$action = $_POST['action'] ?? '';
+
+// ACTION: CREATE LOAN
+if ($action === 'create_loan') {
+    try {
+        $emp_id = $_POST['employee_id'];
+        $type = $_POST['loan_type'];
+        $custom_type = ($type === 'other') ? $_POST['custom_type'] : null;
+        $amount = floatval($_POST['principal_amount']);
+        $repayment = floatval($_POST['repayment_amount']);
+        $start_month = intval($_POST['start_month']);
+        $start_year = intval($_POST['start_year']);
+        
+        $interest_rate = floatval($_POST['interest_rate'] ?? 0);
+        
+        if (empty($emp_id) || $amount <= 0 || $repayment <= 0) {
+            throw new Exception("Invalid loan details.");
+        }
+
+        // Interest Calculation
+        $interest_amount = 0;
+        if ($interest_rate > 0) {
+            $interest_amount = $amount * ($interest_rate / 100);
+        }
+        $total_balance = $amount + $interest_amount;
+
+        // File Upload
+        $doc_path = null;
+        if (isset($_FILES['loan_doc']) && $_FILES['loan_doc']['error'] === UPLOAD_ERR_OK) {
+            $allow = ['pdf', 'jpg', 'png', 'jpeg'];
+            $fn = $_FILES['loan_doc']['name'];
+            $ext = strtolower(pathinfo($fn, PATHINFO_EXTENSION));
+            if (in_array($ext, $allow)) {
+                $new_fn = "loan_doc_{$emp_id}_" . time() . ".$ext";
+                $target = "../uploads/loans/";
+                if (!is_dir($target)) mkdir($target, 0777, true);
+                if (move_uploaded_file($_FILES['loan_doc']['tmp_name'], $target . $new_fn)) {
+                    $doc_path = $new_fn;
+                }
+            }
+        }
+
+        $stmt = $pdo->prepare("INSERT INTO loans (company_id, employee_id, loan_type, custom_type, principal_amount, repayment_amount, balance, start_month, start_year, status, document_path, interest_rate, interest_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)");
+        $stmt->execute([$company_id, $emp_id, $type, $custom_type, $amount, $repayment, $total_balance, $start_month, $start_year, $doc_path, $interest_rate, $interest_amount]);
+        
+        log_audit($company_id, $user_id, 'CREATE_LOAN', "Created loan request for Employee ID $emp_id: " . number_format($amount) . " (Interest: $interest_rate%)");
+        echo json_encode(['status' => true, 'message' => 'Loan request created.']);
+    
+    } catch (Exception $e) {
+        echo json_encode(['status' => false, 'message' => $e->getMessage()]);
+    }
+}
+
+// ACTION: FETCH LOANS
+elseif ($action === 'fetch_loans') {
+    $filter = $_POST['filter'] ?? 'all'; // 'pending', 'active', 'completed'
+    
+    $sql = "SELECT l.*, e.first_name, e.last_name, e.photo 
+            FROM loans l 
+            JOIN employees e ON l.employee_id = e.id 
+            WHERE l.company_id = ?";
+    
+    $params = [$company_id];
+    
+    if ($filter === 'pending') {
+        $sql .= " AND l.status = 'pending'";
+    } elseif ($filter === 'active') {
+        $sql .= " AND l.status IN ('approved') AND l.balance > 0";
+    } elseif ($filter === 'completed') {
+        $sql .= " AND (l.status = 'completed' OR (l.status = 'approved' AND l.balance <= 0))";
+    }
+    
+    $sql .= " ORDER BY l.created_at DESC";
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $loans = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    echo json_encode(['status' => true, 'loans' => $loans]);
+}
+
+// ACTION: APPROVE LOAN
+elseif ($action === 'approve_loan') {
+    $loan_id = $_POST['loan_id'];
+    try {
+        $stmt = $pdo->prepare("UPDATE loans SET status='approved', approved_at=NOW(), approved_by=? WHERE id=? AND company_id=?");
+        $stmt->execute([$user_id, $loan_id, $company_id]);
+        
+        log_audit($company_id, $user_id, 'APPROVE_LOAN', "Approved Loan ID: $loan_id");
+        echo json_encode(['status' => true, 'message' => 'Loan approved.']);
+    } catch (Exception $e) {
+        echo json_encode(['status' => false, 'message' => $e->getMessage()]);
+    }
+}
+
+// ACTION: REJECT LOAN
+elseif ($action === 'reject_loan') {
+    $loan_id = $_POST['loan_id'];
+    try {
+        $stmt = $pdo->prepare("UPDATE loans SET status='rejected' WHERE id=? AND company_id=?");
+        $stmt->execute([$loan_id, $company_id]);
+        
+        log_audit($company_id, $user_id, 'REJECT_LOAN', "Rejected Loan ID: $loan_id");
+        echo json_encode(['status' => true, 'message' => 'Loan rejected.']);
+    } catch (Exception $e) {
+        echo json_encode(['status' => false, 'message' => $e->getMessage()]);
+    }
+}
+?>

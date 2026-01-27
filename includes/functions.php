@@ -22,7 +22,14 @@ function redirect($url) {
 }
 
 /**
- * Check if user is logged in
+ * Check if user is logged in (Boolean)
+ */
+function is_logged_in() {
+    return isset($_SESSION['user_id']);
+}
+
+/**
+ * Check if user is logged in (Redirect if not)
  */
 function require_login() {
     if (!isset($_SESSION['user_id'])) {
@@ -99,6 +106,23 @@ function register_company_and_user($company_name, $email, $password, $first_name
     } catch (Exception $e) {
         $pdo->rollBack();
         return ['status' => false, 'message' => $e->getMessage()];
+    }
+}
+/**
+ * Log an audit trail event
+ */
+function log_audit($company_id, $user_id, $action, $details = null) {
+    global $pdo;
+    
+    // Get IP
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
+    
+    try {
+        $stmt = $pdo->prepare("INSERT INTO audit_logs (company_id, user_id, action, details, ip_address) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$company_id, $user_id, $action, $details, $ip]);
+    } catch (Exception $e) {
+        // Fail silently or log to file? Audit failure shouldn't crash app flow generally.
+        error_log("Audit Log Failed: " . $e->getMessage());
     }
 }
 ?>

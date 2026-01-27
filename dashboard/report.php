@@ -282,25 +282,25 @@ $current_page = 'reports'; // Matches key in dashboard_sidebar.php
                             <div class="w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900/20 text-green-600 flex items-center justify-center mb-4"><i data-lucide="file-check" class="w-5 h-5"></i></div>
                             <h4 class="font-bold text-slate-900 dark:text-white">PAYE Schedule</h4>
                             <p class="text-xs text-slate-500 mb-4">Tax remittance for Internal Revenue Service.</p>
-                            <button class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
+                            <a href="print_tax_report.php" target="_blank" class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-center block">Download</a>
                         </div>
                         <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 transition-all cursor-pointer shadow-sm hover:shadow-md group flex flex-col h-full group">
                             <div class="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-900/20 text-blue-600 flex items-center justify-center mb-4"><i data-lucide="piggy-bank" class="w-5 h-5"></i></div>
                             <h4 class="font-bold text-slate-900 dark:text-white">Pension Report</h4>
                             <p class="text-xs text-slate-500 mb-4">Contribution schedule for PFAs.</p>
-                            <button class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
+                            <button onclick="alert('Pension report module is coming soon.')" class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
                         </div>
                         <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 transition-all cursor-pointer shadow-sm hover:shadow-md group flex flex-col h-full group">
                             <div class="w-10 h-10 rounded-lg bg-orange-100 dark:bg-orange-900/20 text-orange-600 flex items-center justify-center mb-4"><i data-lucide="heart-pulse" class="w-5 h-5"></i></div>
                             <h4 class="font-bold text-slate-900 dark:text-white">NHIS Report</h4>
                             <p class="text-xs text-slate-500 mb-4">Health insurance contribution schedule.</p>
-                            <button class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
+                            <button onclick="alert('NHIS report module is coming soon.')" class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
                         </div>
                         <div class="bg-white dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 transition-all cursor-pointer shadow-sm hover:shadow-md group flex flex-col h-full group">
                             <div class="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/20 text-purple-600 flex items-center justify-center mb-4"><i data-lucide="home" class="w-5 h-5"></i></div>
                             <h4 class="font-bold text-slate-900 dark:text-white">NHF Report</h4>
                             <p class="text-xs text-slate-500 mb-4">National Housing Fund remittance.</p>
-                            <button class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
+                            <button onclick="alert('NHF report module is coming soon.')" class="w-full py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 rounded hover:bg-slate-100 dark:hover:bg-slate-700">Download</button>
                         </div>
                     </div>
                 </div>

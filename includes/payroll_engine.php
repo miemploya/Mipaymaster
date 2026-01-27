@@ -221,6 +221,19 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
              $upd_status = $pdo->prepare("UPDATE payroll_runs SET status='draft', locked_at=NULL, locked_by=NULL WHERE id=?");
              $upd_status->execute([$run_id]);
              
+        } elseif ($existing['status'] === 'draft') {
+             // REGENERATION: Logic to clear previous data
+             // Delete snapshots first (if no cascade)
+             $del_snaps = $pdo->prepare("DELETE FROM payroll_snapshots WHERE payroll_entry_id IN (SELECT id FROM payroll_entries WHERE payroll_run_id = ?)");
+             $del_snaps->execute([$existing['id']]);
+             
+             $del_entries = $pdo->prepare("DELETE FROM payroll_entries WHERE payroll_run_id = ?");
+             $del_entries->execute([$existing['id']]);
+             
+             $run_id = $existing['id'];
+             // Update timestamp
+             $pdo->prepare("UPDATE payroll_runs SET created_at = NOW() WHERE id=?")->execute([$run_id]);
+
         } else {
              return ['status' => false, 'message' => "Payroll for this period already exists and is " . $existing['status']];
         }
@@ -235,7 +248,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, sc.base_gross_amount 
                            FROM employees e
                            JOIN salary_categories sc ON e.salary_category_id = sc.id
-                           WHERE e.company_id = ? AND e.employment_status = 'Full Time'");
+                           WHERE e.company_id = ? AND e.employment_status IN ('Full Time', 'Active', 'Probation', 'Contract')");
     $stmt->execute([$company_id]);
     $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -291,20 +304,29 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $base_gross = floatval($emp['base_gross_amount']);
             
             // --- INCREMENT LOGIC START ---
-            $increment = $incManager->get_active_increment($emp['id'], $period_end_date);
+            // --- INCREMENT LOGIC START ---
+            $increments = $incManager->get_active_increment($emp['id'], $period_end_date); // Now returns array
             $adjusted_gross = $base_gross;
-            $applied_increment = null;
+            $applied_increments = [];
 
-            if ($increment) {
-                 if ($increment['adjustment_type'] == 'fixed') {
-                     $adjusted_gross += $increment['adjustment_value'];
-                 } elseif ($increment['adjustment_type'] == 'percentage') {
-                     $adjusted_gross += ($base_gross * ($increment['adjustment_value'] / 100));
-                 } elseif ($increment['adjustment_type'] == 'override') {
-                     $adjusted_gross = $increment['adjustment_value'];
-                 }
-                 $applied_increment = $increment;
+            if (!empty($increments)) {
+                foreach ($increments as $inc) {
+                    if ($inc['adjustment_type'] == 'fixed') {
+                        $adjusted_gross += $inc['adjustment_value'];
+                    } elseif ($inc['adjustment_type'] == 'percentage') {
+                        // Cumulative: % of current adjusted gross
+                        $adjusted_gross += ($adjusted_gross * ($inc['adjustment_value'] / 100));
+                    } elseif ($inc['adjustment_type'] == 'override') {
+                         // Override supercedes previous
+                        $adjusted_gross = $inc['adjustment_value'];
+                    }
+                    $applied_increments[] = $inc;
+                }
             }
+            // Note: $applied_increment is now plural usage, but downstream might need specific handling?
+            // Checking simple logic usage: no specific dependence downstream on $applied_increment logic 
+            // other than maybe reporting?
+            // --- INCREMENT LOGIC END ---
             // --- INCREMENT LOGIC END ---
 
             $breakdown = $cat_breakdowns[$emp['category_id']] ?? [];
@@ -374,12 +396,58 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $total_deductions = $tax_paye + $pension_emp + $nhis + $nhf;
             $net_pay = $adjusted_gross - $total_deductions;
 
+            // --- LOAN DEDUCTION LOGIC ---
+            // Fetch active approved loans
+            $loan_deductions = [];
+            $total_loan_amount = 0;
+            
+            // Check if loan started on or before this period
+            // Logic: start_year < current_year OR (start_year == current_year AND start_month <= current_month)
+            $stmt_loans = $pdo->prepare("
+                SELECT * FROM loans 
+                WHERE employee_id = ? 
+                AND status = 'approved' 
+                AND balance > 0
+                AND (start_year < ? OR (start_year = ? AND start_month <= ?))
+            ");
+            $stmt_loans->execute([$emp['id'], $year, $year, $month]);
+            $active_loans = $stmt_loans->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($active_loans as $loan) {
+                // Deduct min(repayment, balance)
+                $amount = min(floatval($loan['repayment_amount']), floatval($loan['balance']));
+                if ($amount > 0) {
+                    $total_loan_amount += $amount;
+                    $loan_deductions[] = [
+                        'loan_id' => $loan['id'],
+                        'type' => $loan['loan_type'],
+                        'custom_type' => $loan['custom_type'], // For description
+                        'amount' => $amount,
+                        'balance_before' => $loan['balance'],
+                        'balance_after_projected' => $loan['balance'] - $amount
+                    ];
+                }
+            }
+
+            // Apply Deduction to Net Pay
+            $net_pay -= $total_loan_amount;
+            // ---------------------------
+
             $total_gross_run += $adjusted_gross;
             $total_net_run += $net_pay;
 
             // Insert Entry
+            // Note: total_deductions in DB usually refers to statutory/tax deductions. 
+            // We'll keep it as is, or should we include loans?
+            // If we include loans in 'total_deductions' column, it solves 'Gross - Deductions = Net'.
+            // If we don't, 'Gross - Deductions != Net'. 
+            // Let's add it to total_deductions for consistency in simple reports, 
+            // BUT we must distinguish in Breakdown.
+            // Decision: Add to total_deductions column for integrity check (Gross - Ded = Net).
+            $total_deductions_stored = $total_deductions + $total_loan_amount;
+
             $ins_entry->execute([
-                $run_id, $emp['id'], $adjusted_gross, $total_allowances, $total_deductions, $net_pay
+                $run_id, $emp['id'], $adjusted_gross, $total_allowances, $total_deductions_stored, $net_pay
             ]);
             $entry_id = $pdo->lastInsertId();
 
@@ -387,7 +455,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $snapshot_data = [
                 'base_gross' => $base_gross,
                 'adjusted_gross' => $adjusted_gross,
-                'increment_applied' => $applied_increment,
+                'increment_applied' => $applied_increments,
                 'breakdown' => $breakdown_values,
                 'statutory' => [
                     'paye' => $tax_paye,
@@ -396,6 +464,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                     'nhis' => $nhis,
                     'nhf' => $nhf
                 ],
+                'loans' => $loan_deductions,
                 'settings_used' => $settings
             ];
             

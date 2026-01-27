@@ -14,6 +14,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
     $year = $_POST['year'];
     // ... logic ...
 }
+
+// Fetch Active Departments
+$stmt = $pdo->prepare("SELECT name FROM departments WHERE company_id = ? ORDER BY name");
+$stmt->execute([$company_id]);
+$departments = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+// Fetch Salary Categories
+$stmt = $pdo->prepare("SELECT id, name FROM salary_categories WHERE company_id = ? ORDER BY name");
+$stmt->execute([$company_id]);
+$categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -94,11 +104,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                 
                 payrollRun: null, // Stores metadata
                 sheetData: [],    // Stores entries
+                
+                // FILTER DATA
+                deptList: <?php echo json_encode($departments); ?>,
+                catList: <?php echo json_encode($categories); ?>,
+                
+                // SELECTION
+                selectedDept: '',
+                selectedCat: '',
+
                 totals: {
                     gross: 0,
                     deductions: 0,
-                    net: 0
+                    net: 0,
+                    count: 0
                 },
+                
+                checklist: {
+                    active_employees: 0,
+                    statutory_set: false,
+                    missing_bank: 0,
+                    missing_category: 0,
+                    ready: false
+                },
+                
+                anomalies: [],
 
                 init() {
                     this.$watch('view', () => setTimeout(() => lucide.createIcons(), 50));
@@ -111,6 +141,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                     window.scrollTo({top: 0, behavior: 'smooth'});
                     if(newView === 'sheet' || newView === 'preview') {
                         this.fetchSheet();
+                    }
+                    if(newView === 'run') {
+                        this.checkReadiness();
+                    }
+                },
+
+                async checkReadiness() {
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/payroll_operations.php', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ action: 'check_readiness' })
+                        });
+                        const data = await res.json();
+                        if(data.status) {
+                            this.checklist = { ...data.checks, ready: true };
+                            // Basic logic for "Ready": 
+                            // Warn if missing bank or category, but don't hard block unless 0 active?
+                        }
+                    } catch(e) {
+                        console.error("Readiness check failed", e);
+                    } finally {
+                        this.loading = false;
                     }
                 },
 
@@ -162,16 +216,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                         if(data.status && data.run) {
                             this.payrollRun = data.run; // id, status, etc.
                             this.sheetData = data.entries;
+                            // Update Totals
                             this.totals = {
                                 gross: parseFloat(data.totals.total_gross || 0),
                                 deductions: parseFloat(data.totals.total_deductions || 0),
                                 net: parseFloat(data.totals.total_net || 0),
                                 count: parseInt(data.totals.employee_count || 0)
                             };
+                            // Update Anomalies
+                            this.anomalies = data.anomalies || [];
                         } else {
                             // No run found
                             this.payrollRun = null;
                             this.sheetData = [];
+                            this.totals = { gross: 0, deductions: 0, net: 0, count: 0 };
+                            this.anomalies = [];
                         }
                     } catch(e) {
                         console.error(e);
@@ -451,11 +510,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Department Filter</label>
-                                <select class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5"><option>All Departments</option></select>
+                                <select x-model="selectedDept" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5">
+                                    <option value="">All Departments</option>
+                                    <template x-for="dept in deptList" :key="dept">
+                                        <option :value="dept" x-text="dept"></option>
+                                    </template>
+                                </select>
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Salary Category Filter</label>
-                                <select class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5"><option>All Categories</option></select>
+                                <select x-model="selectedCat" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5">
+                                    <option value="">All Categories</option>
+                                     <template x-for="cat in catList" :key="cat.id">
+                                        <option :value="cat.id" x-text="cat.name"></option>
+                                    </template>
+                                </select>
                             </div>
                         </div>
 
@@ -463,17 +532,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                         <div class="mb-8">
                             <h3 class="text-sm font-bold text-slate-500 uppercase tracking-wide mb-4">Pre-Run Validation Checklist</h3>
                             <div class="space-y-3">
-                                <div class="flex items-center gap-3 p-3 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-100 dark:border-green-900/30">
-                                    <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
-                                    <span class="text-sm text-green-800 dark:text-green-300">142 Active Employees with Salary Category</span>
+                                <!-- Active Employees -->
+                                <div class="flex items-center gap-3 p-3 rounded-lg border transition-colors"
+                                    :class="checklist.active_employees > 0 ? 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30' : 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30'">
+                                    <i :data-lucide="checklist.active_employees > 0 ? 'check-circle' : 'x-circle'" 
+                                       class="w-5 h-5" :class="checklist.active_employees > 0 ? 'text-green-600' : 'text-red-600'"></i>
+                                    <span class="text-sm" :class="checklist.active_employees > 0 ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'"
+                                          x-text="checklist.active_employees + ' Active Employees with Salary Category'"></span>
                                 </div>
-                                <div class="flex items-center gap-3 p-3 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-100 dark:border-green-900/30">
-                                    <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
-                                    <span class="text-sm text-green-800 dark:text-green-300">Statutory Settings Configured (PAYE, Pension)</span>
+                                
+                                <!-- Statutory Settings -->
+                                <div class="flex items-center gap-3 p-3 rounded-lg border transition-colors"
+                                    :class="checklist.statutory_set ? 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30' : 'bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30'">
+                                    <i :data-lucide="checklist.statutory_set ? 'check-circle' : 'alert-circle'" 
+                                       class="w-5 h-5" :class="checklist.statutory_set ? 'text-green-600' : 'text-amber-600'"></i>
+                                    <span class="text-sm" :class="checklist.statutory_set ? 'text-green-800 dark:text-green-300' : 'text-amber-800 dark:text-amber-300'"
+                                          x-text="checklist.statutory_set ? 'Statutory Settings Configured' : 'Statutory Settings Not Configured (Defaults used)'"></span>
                                 </div>
-                                <div class="flex items-center gap-3 p-3 bg-amber-50 dark:bg-amber-900/10 rounded-lg border border-amber-100 dark:border-amber-900/30">
-                                    <i data-lucide="alert-circle" class="w-5 h-5 text-amber-600"></i>
-                                    <span class="text-sm text-amber-800 dark:text-amber-300">3 Employees Missing Bank Details (Auto-Excl.)</span>
+
+                                <!-- Missing Bank -->
+                                <div class="flex items-center gap-3 p-3 rounded-lg border transition-colors"
+                                    :class="checklist.missing_bank === 0 ? 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30' : 'bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30'">
+                                    <i :data-lucide="checklist.missing_bank === 0 ? 'check-circle' : 'alert-circle'" 
+                                       class="w-5 h-5" :class="checklist.missing_bank === 0 ? 'text-green-600' : 'text-amber-600'"></i>
+                                    <span class="text-sm" :class="checklist.missing_bank === 0 ? 'text-green-800 dark:text-green-300' : 'text-amber-800 dark:text-amber-300'"
+                                          x-text="checklist.missing_bank === 0 ? 'All Employees Have Bank Details' : checklist.missing_bank + ' Employees Missing Bank Details'"></span>
+                                </div>
+
+                                <!-- Missing Category -->
+                                <div class="flex items-center gap-3 p-3 rounded-lg border transition-colors"
+                                    :class="checklist.missing_category === 0 ? 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30' : 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30'">
+                                    <i :data-lucide="checklist.missing_category === 0 ? 'check-circle' : 'x-circle'" 
+                                       class="w-5 h-5" :class="checklist.missing_category === 0 ? 'text-green-600' : 'text-red-600'"></i>
+                                    <span class="text-sm" :class="checklist.missing_category === 0 ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'"
+                                          x-text="checklist.missing_category === 0 ? 'All Employees Have Valid Categories' : checklist.missing_category + ' Employees Missing Salary Category'"></span>
                                 </div>
                             </div>
                         </div>
@@ -537,7 +629,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.paye)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.pension)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhis)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent text-red-500">0.00</td>
+                                        <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.loan)"></td>
                                         
                                         <!-- Net -->
                                         <td class="font-bold bg-brand-50/30 text-brand-700 dark:text-brand-300 border-l border-slate-200 dark:border-slate-800" x-text="formatCurrency(emp.net_pay)"></td>
@@ -578,20 +670,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_payroll'])) {
                     </div>
 
                     <!-- Exceptions Panel -->
-                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-900/30 overflow-hidden mb-8">
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-900/30 overflow-hidden mb-8" x-show="anomalies.length > 0">
                         <div class="p-4 bg-red-50 dark:bg-red-900/10 border-b border-red-100 dark:border-red-900/20 flex items-center gap-2">
                             <i data-lucide="alert-triangle" class="w-5 h-5 text-red-600"></i>
-                            <h3 class="font-bold text-red-800 dark:text-red-300">Detected Anomalies (2)</h3>
+                            <h3 class="font-bold text-red-800 dark:text-red-300" x-text="'Detected Anomalies (' + anomalies.length + ')'"></h3>
                         </div>
                         <div class="p-4 space-y-3">
-                            <div class="flex items-center justify-between text-sm">
-                                <span class="text-slate-700 dark:text-slate-300"><span class="font-bold">Sam Wilson</span> has 0 days attendance but full salary.</span>
-                                <button class="text-xs text-brand-600 hover:underline">Review</button>
-                            </div>
-                            <div class="flex items-center justify-between text-sm">
-                                <span class="text-slate-700 dark:text-slate-300"><span class="font-bold">Mike Ross</span> Net Pay is unusually high (+40%).</span>
-                                <button class="text-xs text-brand-600 hover:underline">Review</button>
-                            </div>
+                            <template x-for="issue in anomalies">
+                                <div class="flex items-center justify-between text-sm">
+                                    <span class="text-slate-700 dark:text-slate-300"><span class="font-bold" x-text="issue.employee"></span>: <span x-text="issue.issue + ' - ' + issue.detail"></span></span>
+                                    <button class="text-xs text-brand-600 hover:underline">Review</button>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-green-200 dark:border-green-900/30 overflow-hidden mb-8" x-show="anomalies.length === 0">
+                         <div class="p-4 bg-green-50 dark:bg-green-900/10 border-b border-green-100 dark:border-green-900/20 flex items-center gap-2">
+                            <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
+                            <h3 class="font-bold text-green-800 dark:text-green-300">No Anomalies Detected</h3>
+                        </div>
+                        <div class="p-4 text-sm text-slate-600 dark:text-slate-400">
+                            Payroll data looks consistent with rules. Proceed with validation.
                         </div>
                     </div>
 
