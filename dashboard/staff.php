@@ -385,21 +385,39 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 async submitLoan() {
                     const fd = new FormData();
                     fd.append('action', 'create_loan');
-                    // No employee_id needed, backend safely infers it for 'employee' role
-                    fd.append('employee_id', 'SELF'); 
+                    // Backend auto-detects employee_id for 'employee' role - no need to send it
                     fd.append('loan_type', this.loanForm.type);
                     if (this.loanForm.type === 'other') fd.append('custom_type', this.loanForm.custom_type);
                     fd.append('principal_amount', this.loanForm.amount);
                     fd.append('repayment_amount', this.loanForm.repayment);
+                    fd.append('interest_rate', '0'); // Default to 0% interest for employee self-service
                     fd.append('start_month', this.loanForm.start_month);
                     fd.append('start_year', this.loanForm.start_year);
+
+                    console.log('Employee submitting loan:', {
+                        type: this.loanForm.type,
+                        amount: this.loanForm.amount,
+                        repayment: this.loanForm.repayment,
+                        start: `${this.loanForm.start_month}/${this.loanForm.start_year}`
+                    });
 
                     try {
                         const res = await fetch('../ajax/loan_operations.php', { method: 'POST', body: fd });
                         const data = await res.json();
-                        alert(data.message);
-                        if (data.status) { this.loanModalOpen = false; window.location.reload(); }
-                    } catch (e) { alert('Error: ' + e); }
+                        
+                        console.log('Server response:', data);
+                        
+                        if (data.status) {
+                            alert('Loan application submitted successfully! (ID: ' + data.loan_id + ')');
+                            this.loanModalOpen = false;
+                            this.loanForm = { type: 'salary_advance', custom_type: '', amount: '', repayment: '', start_month: new Date().getMonth() + 1, start_year: new Date().getFullYear() };
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (e) {
+                        console.error('Submission error:', e);
+                        alert('Error: ' + e);
+                    }
                 }
             }
         }

@@ -223,13 +223,10 @@ $current_page = 'increments';
 
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         <!-- Header -->
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-               <button id="mobile-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
-               <h2 class="text-xl font-bold text-slate-800 dark:text-white">Salary Increments</h2>
-            </div>
-            <div><!-- User Menu placeholder --></div>
-        </header>
+        <!-- Header -->
+        <?php $page_title = 'Salary Increments'; include '../includes/dashboard_header.php'; ?>
+        <!-- Payroll Sub-Header -->
+        <?php include '../includes/payroll_header.php'; ?>
         
         <style>
             /* Toolbar transition */
@@ -541,56 +538,13 @@ $current_page = 'increments';
     </div>
 
 <script>
-    lucide.createIcons();
-    // Theme Toggle
-    const themeBtn = document.getElementById('theme-toggle');
-    const html = document.documentElement;
-    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        html.classList.add('dark');
-    } else {
-        html.classList.remove('dark');
-    }
-    if(themeBtn) {
-        themeBtn.addEventListener('click', () => {
-            html.classList.toggle('dark');
-            localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-        });
-    }
-
-    // Sidebar Logic
-    const mobileToggle = document.getElementById('mobile-toggle');
-    const sidebar = document.getElementById('sidebar');
-    const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-    const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-    const collapsedToolbar = document.getElementById('collapsed-toolbar');
-
-    // Add mobile toggle listener
-    if(mobileToggle) {
-        mobileToggle.addEventListener('click', () => {
-             if(sidebar) sidebar.classList.toggle('-translate-x-full');
-        });
-    }
-
-    function toggleSidebar() {
-        if(!sidebar) return;
-        sidebar.classList.toggle('w-64');
-        sidebar.classList.toggle('w-0');
-        sidebar.classList.toggle('p-0'); 
-        
-        if(collapsedToolbar) {
-            if (sidebar.classList.contains('w-0')) {
-                collapsedToolbar.classList.remove('toolbar-hidden');
-                collapsedToolbar.classList.add('toolbar-visible');
-            } else {
-                collapsedToolbar.classList.add('toolbar-hidden');
-                collapsedToolbar.classList.remove('toolbar-visible');
-            }
-        }
-    }
-
-    if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-    if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-
+    // Specific Sidebar Logic for increments page (if needed, otherwise rely on dashboard_scripts)
+    // The previous script had specific ID 'mobile-toggle' which differs from 'mobile-sidebar-toggle' in dashboard_header. 
+    // START FIX: Ensure IDs match or standard script handles it. 
+    // dashboard_header uses 'mobile-sidebar-toggle'. 
+    // dashboard_scripts handles 'mobile-sidebar-toggle'.
+    // So we can just include the standard script.
 </script>
+<?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

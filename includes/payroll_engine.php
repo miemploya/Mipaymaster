@@ -248,7 +248,8 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, sc.base_gross_amount 
                            FROM employees e
                            JOIN salary_categories sc ON e.salary_category_id = sc.id
-                           WHERE e.company_id = ? AND e.employment_status IN ('Full Time', 'Active', 'Probation', 'Contract')");
+                           WHERE e.company_id = ? 
+                           AND LOWER(e.employment_status) IN ('active', 'full time', 'probation', 'contract')");
     $stmt->execute([$company_id]);
     $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -409,31 +410,44 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $loan_deductions = [];
             $total_loan_amount = 0;
             
-            // Check if loan started on or before this period
-            // Logic: start_year < current_year OR (start_year == current_year AND start_month <= current_month)
+            // Fetch ALL approved active loans for this employee first
             $stmt_loans = $pdo->prepare("
                 SELECT * FROM loans 
                 WHERE employee_id = ? 
                 AND status = 'approved' 
                 AND balance > 0
-                AND (start_year < ? OR (start_year = ? AND start_month <= ?))
             ");
-            $stmt_loans->execute([$emp['id'], $year, $year, $month]);
-            $active_loans = $stmt_loans->fetchAll(PDO::FETCH_ASSOC);
+            $stmt_loans->execute([$emp['id']]);
+            $candidate_loans = $stmt_loans->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($active_loans as $loan) {
-                // Deduct min(repayment, balance)
-                $amount = min(floatval($loan['repayment_amount']), floatval($loan['balance']));
-                if ($amount > 0) {
-                    $total_loan_amount += $amount;
-                    $loan_deductions[] = [
-                        'loan_id' => $loan['id'],
-                        'type' => $loan['loan_type'],
-                        'custom_type' => $loan['custom_type'], // For description
-                        'amount' => $amount,
-                        'balance_before' => $loan['balance'],
-                        'balance_after_projected' => $loan['balance'] - $amount
-                    ];
+            foreach ($candidate_loans as $loan) {
+                // PHP Date Filter: Start Period <= Current Period
+                $l_month = (int)$loan['start_month'];
+                $l_year = (int)$loan['start_year'];
+                $c_month = (int)$month;
+                $c_year = (int)$year;
+
+                $is_eligible = false;
+                if ($l_year < $c_year) {
+                    $is_eligible = true;
+                } elseif ($l_year === $c_year && $l_month <= $c_month) {
+                    $is_eligible = true;
+                }
+
+                if ($is_eligible) {
+                    // Deduct min(repayment, balance)
+                    $amount = min(floatval($loan['repayment_amount']), floatval($loan['balance']));
+                    if ($amount > 0) {
+                        $total_loan_amount += $amount;
+                        $loan_deductions[] = [
+                            'loan_id' => $loan['id'],
+                            'type' => $loan['loan_type'],
+                            'custom_type' => $loan['custom_type'], // For description
+                            'amount' => $amount,
+                            'balance_before' => $loan['balance'],
+                            'balance_after_projected' => $loan['balance'] - $amount
+                        ];
+                    }
                 }
             }
 

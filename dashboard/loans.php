@@ -19,6 +19,9 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
     <title>Loans & Advances - MiPayMaster</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Alpine Plugins -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    <!-- Alpine Core -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <script>
         tailwind.config = {
@@ -39,22 +42,40 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
     <?php include '../includes/dashboard_sidebar.php'; ?>
 
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-                <button id="mobile-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
-                <h2 class="text-xl font-bold text-slate-800 dark:text-white">Loans & Advances</h2>
-            </div>
-            <button @click="openModal()" class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold text-sm transition-colors shadow-sm">
-                <i data-lucide="plus" class="w-4 h-4"></i> New Loan Request
-            </button>
-        </header>
+        <!-- Header -->
+        <?php $page_title = 'Loans & Advances'; include '../includes/dashboard_header.php'; ?>
+        <!-- Payroll Sub-Header -->
+        <?php include '../includes/payroll_header.php'; ?>
+        
+        <!-- Additional Header Action for Loans (Restored after include) -->
+        <div class="fixed top-20 right-6 z-20">
+             <!-- This button was in the header. Moving it to the page body or keeping it in header is tricky with include.
+                  The include has a rigid structure. `index.php` goal is uniformity.
+                  However, `loans.php` had a "New Loan Request" button in the header.
+                  The new header design does NOT have space for custom buttons easily.
+                  I will place it below the header for now, or use a portal if I could.
+                  Actually, best practice for uniformity is action buttons in the main content area (like Quick Actions in dashboard).
+                  I will place it in the Page Title area? No, the include renders the title.
+                  
+                  Let's put it in the top of Main Content as a "Toolbar" or just float it.
+                  I'll place it back in the main content area's top bar which already has Tabs.
+                  Wait, line 50 had the button.
+                  I will move this button to the Tabs area (line 57).
+             -->
+        </div>
 
         <main class="flex-1 overflow-y-auto p-6 lg:p-8">
             <!-- Tabs -->
-            <div class="flex gap-4 border-b border-slate-200 dark:border-slate-800 mb-6">
-                <button @click="tab = 'pending'; fetchLoans()" :class="tab === 'pending' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Pending Requests</button>
-                <button @click="tab = 'active'; fetchLoans()" :class="tab === 'active' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Active Loans</button>
-                <button @click="tab = 'completed'; fetchLoans()" :class="tab === 'completed' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">History / Completed</button>
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200 dark:border-slate-800 mb-6 pb-2">
+                <div class="flex gap-4">
+                    <button @click="tab = 'pending'; fetchLoans()" :class="tab === 'pending' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Pending Requests</button>
+                    <button @click="tab = 'active'; fetchLoans()" :class="tab === 'active' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Active Loans</button>
+                    <button @click="tab = 'completed'; fetchLoans()" :class="tab === 'completed' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">History</button>
+                </div>
+                <!-- Action Button -->
+                <button @click="openModal()" class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold text-sm transition-colors shadow-sm">
+                    <i data-lucide="plus" class="w-4 h-4"></i> New Request
+                </button>
             </div>
 
             <!-- Table -->
@@ -157,7 +178,7 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
                     </div>
                     <div x-show="form.loan_type === 'other'">
                         <label class="block text-xs font-bold text-slate-500 mb-1">Specify Type</label>
-                        <input type="text" x-model="form.custom_type" @input="form.custom_type = form.custom_type.charAt(0).toUpperCase() + form.custom_type.slice(1)" placeholder="e.g. Medical Emergency" required class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-2 text-sm">
+                        <input type="text" x-model="form.custom_type" @input="form.custom_type = form.custom_type.charAt(0).toUpperCase() + form.custom_type.slice(1)" placeholder="e.g. Medical Emergency" :required="form.loan_type === 'other'" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-2 text-sm">
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
@@ -288,6 +309,22 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
                 },
 
                 async submitLoan() {
+                    // Frontend validation
+                    if (!this.form.employee_id) {
+                        alert('Please select an employee');
+                        return;
+                    }
+                    
+                    if (!this.form.principal_amount || parseFloat(this.form.principal_amount) <= 0) {
+                        alert('Please enter a valid principal amount');
+                        return;
+                    }
+                    
+                    if (!this.form.repayment_amount || parseFloat(this.form.repayment_amount) <= 0) {
+                        alert('Please enter a valid repayment amount');
+                        return;
+                    }
+                    
                     const fd = new FormData();
                     fd.append('action', 'create_loan');
                     fd.append('employee_id', this.form.employee_id);
@@ -300,15 +337,32 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
                     fd.append('start_year', this.form.start_year);
                     if (this.form.file) fd.append('loan_doc', this.form.file);
 
-                    const res = await fetch('../ajax/loan_operations.php', { method: 'POST', body: fd });
-                    const data = await res.json();
-                    
-                    if (data.status) {
-                        alert('Loan Request Created');
-                        this.isModalOpen = false;
-                        this.fetchLoans();
-                    } else {
-                        alert('Error: ' + data.message);
+                    console.log('Submitting Loan with data:', {
+                        employee_id: this.form.employee_id,
+                        loan_type: this.form.loan_type,
+                        principal: this.form.principal_amount,
+                        repayment: this.form.repayment_amount,
+                        interest_rate: this.form.interest_rate,
+                        start: `${this.form.start_month}/${this.form.start_year}`,
+                        hasFile: !!this.form.file
+                    });
+
+                    try {
+                        const res = await fetch('../ajax/loan_operations.php', { method: 'POST', body: fd });
+                        const data = await res.json();
+                        
+                        console.log('Server response:', data);
+                        
+                        if (data.status) {
+                            alert('Loan Request Created Successfully! (ID: ' + data.loan_id + ')');
+                            this.isModalOpen = false;
+                            this.fetchLoans();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (error) {
+                        console.error('Submission error:', error);
+                        alert('Network error. Please check loans_debug.log for details.');
                     }
                 },
 
@@ -338,14 +392,7 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
             }
         }
 
-        // Mobile toggle logic (Standard)
-        const mobileToggle = document.getElementById('mobile-toggle');
-        const sidebar = document.getElementById('sidebar');
-        if(mobileToggle && sidebar) {
-             mobileToggle.addEventListener('click', () => {
-                 sidebar.classList.toggle('-translate-x-full');
-             });
-        }
     </script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

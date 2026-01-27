@@ -28,29 +28,25 @@ function is_logged_in() {
     return isset($_SESSION['user_id']);
 }
 
+
 /**
  * Check if user is logged in (Redirect if not)
  */
 function require_login() {
+    // Check if user_id exists in session
     if (!isset($_SESSION['user_id'])) {
         redirect('/Mipaymaster/auth/login.php');
     }
-    // Robustness: Restore company_id OR role if missing but user_id exists
+    
+    // CRITICAL: Validate session integrity - if ANY core session variable is missing, force re-login
+    // This should NEVER happen in normal operation, but protects against session corruption
     if (empty($_SESSION['company_id']) || empty($_SESSION['role'])) {
-        global $pdo;
-        $stmt = $pdo->prepare("SELECT company_id, role, first_name FROM users WHERE id = ?");
-        $stmt->execute([$_SESSION['user_id']]);
-        $user = $stmt->fetch();
-        if ($user) {
-            $_SESSION['company_id'] = $user['company_id'];
-            $_SESSION['role'] = $user['role'];
-            $_SESSION['user_name'] = $user['first_name'];
-        } else {
-            // User ID in session but not in DB? Force logout.
-            session_destroy();
-            redirect('/Mipaymaster/auth/login.php');
-        }
+        // Session is corrupted or incomplete - force logout and re-login
+        session_destroy();
+        redirect('/Mipaymaster/auth/login.php');
     }
+    
+    // Session is valid and complete - no hydration needed
 }
 
 /**

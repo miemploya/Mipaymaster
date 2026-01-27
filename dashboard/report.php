@@ -100,7 +100,7 @@ $current_page = 'reports'; // Matches key in dashboard_sidebar.php
         <!-- Sidebar Include -->
         <?php include '../includes/dashboard_sidebar.php'; ?>
         
-        <!-- NOTIFICATIONS PANEL (Restored System Standard) -->
+        <!-- Notification Panel and Overlay are kept here as they are not in header yet -->
         <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
             <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
@@ -111,48 +111,16 @@ $current_page = 'reports'; // Matches key in dashboard_sidebar.php
             </div>
         </div>
         
-        <!-- Overlay -->
         <div id="overlay" class="fixed inset-0 bg-black/50 z-30 hidden"></div>
 
         <!-- MAIN CONTENT -->
         <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
             
-            <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-                <div class="flex items-center gap-4">
-                    <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                        <i data-lucide="menu" class="w-6 h-6"></i>
-                    </button>
-                    <h2 class="text-xl font-bold text-slate-800 dark:text-white">Reports</h2>
-                </div>
-                <!-- Standard Header Actions (Integrated) -->
-                <div class="flex items-center gap-4">
-                    <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                    </button>
-                    <button id="notif-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors relative">
-                        <i data-lucide="bell" class="w-5 h-5"></i>
-                        <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-950"></span>
-                    </button>
-                     <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
-                    <!-- User Avatar -->
-                    <div x-data="{ open: false }" class="relative">
-                        <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
-                            <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
-                                <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                            </div>
-                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
-                        </button>
-                        <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50 mr-4" style="display: none;">
-                            <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-700">
-                                <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                            </div>
-                            <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
-                        </div>
-                    </div>
-                </div>
-            </header>
+            <!-- Header -->
+            <!-- Header -->
+            <?php $page_title = 'Reports'; include '../includes/dashboard_header.php'; ?>
+            <!-- Admin Sub-Header -->
+            <?php include '../includes/admin_header.php'; ?>
 
             <!-- Horizontal Navigation -->
             <div id="horizontal-nav" class="hidden bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-6 py-2">
@@ -402,86 +370,6 @@ $current_page = 'reports'; // Matches key in dashboard_sidebar.php
 
 
     <!-- Script Logic -->
-    <script>
-        lucide.createIcons();
-
-        // Theme Logic
-        const themeBtn = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            html.classList.add('dark');
-        } else {
-            html.classList.remove('dark');
-        }
-        if(themeBtn) {
-            themeBtn.addEventListener('click', () => {
-                html.classList.toggle('dark');
-                localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-            });
-        }
-
-        // Standard System Logic (Notification & Sidebar)
-        const notifToggle = document.getElementById('notif-toggle');
-        const notifClose = document.getElementById('notif-close');
-        const notifPanel = document.getElementById('notif-panel');
-        const overlay = document.getElementById('overlay');
-        const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-        const sidebar = document.getElementById('sidebar');
-        const collapsedToolbar = document.getElementById('collapsed-toolbar');
-        const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-        const sidebarExpandBarBtn = document.getElementById('sidebar-expand-bar-btn');
-        
-        function toggleOverlay(show) {
-            if (show) overlay.classList.remove('hidden');
-            else overlay.classList.add('hidden');
-        }
-
-        if(notifToggle) {
-            notifToggle.addEventListener('click', () => {
-                notifPanel.classList.remove('translate-x-full');
-                toggleOverlay(true);
-            });
-        }
-
-        if(notifClose) {
-            notifClose.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                toggleOverlay(false);
-            });
-        }
-
-        if(overlay) {
-            overlay.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                if(sidebar) sidebar.classList.add('-translate-x-full'); 
-                toggleOverlay(false);
-            });
-        }
-
-        if(mobileToggle) {
-            mobileToggle.addEventListener('click', () => {
-                sidebar.classList.toggle('-translate-x-full');
-                if (!sidebar.classList.contains('-translate-x-full')) {
-                    toggleOverlay(true);
-                } else {
-                    toggleOverlay(false);
-                }
-            });
-        }
-
-        function toggleSidebar() {
-            sidebar.classList.toggle('w-64');
-            sidebar.classList.toggle('w-0');
-            sidebar.classList.toggle('p-0'); 
-            if (sidebar.classList.contains('w-0')) {
-                if(collapsedToolbar) { collapsedToolbar.classList.remove('toolbar-hidden'); collapsedToolbar.classList.add('toolbar-visible'); }
-            } else {
-                if(collapsedToolbar) { collapsedToolbar.classList.add('toolbar-hidden'); collapsedToolbar.classList.remove('toolbar-visible'); }
-            }
-        }
-        if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-        const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-        if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-    </script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

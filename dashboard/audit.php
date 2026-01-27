@@ -97,12 +97,11 @@ $all_users = $users->fetchAll(PDO::FETCH_ASSOC);
 
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         <!-- Header -->
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-               <button id="mobile-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
-               <h2 class="text-xl font-bold text-slate-800 dark:text-white">Audit Trail</h2>
-            </div>
-        </header>
+        <!-- Header -->
+        <!-- Header -->
+        <?php $page_title = 'Audit Trail'; include '../includes/dashboard_header.php'; ?>
+        <!-- Admin Sub-Header -->
+        <?php include '../includes/admin_header.php'; ?>
 
         <main class="flex-1 overflow-y-auto p-6 lg:p-8">
             
@@ -207,16 +206,6 @@ $all_users = $users->fetchAll(PDO::FETCH_ASSOC);
         </main>
     </div>
     
-    <script>
-        lucide.createIcons();
-        // Mobile Toggle logic if needed (copied from other pages)
-        const mobileToggle = document.getElementById('mobile-toggle');
-        const sidebar = document.getElementById('sidebar'); // Assumes sidebar id in include
-        if(mobileToggle && sidebar) {
-             mobileToggle.addEventListener('click', () => {
-                 sidebar.classList.toggle('-translate-x-full');
-             });
-        }
-    </script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

@@ -114,5 +114,6 @@ $current_page = 'statutory';
     </main>
 </div>
 
+    <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

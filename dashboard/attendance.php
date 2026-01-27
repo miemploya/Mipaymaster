@@ -237,56 +237,9 @@ try {
         <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
             
             <!-- Header -->
-            <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-                <div class="flex items-center gap-4">
-                    <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                        <i data-lucide="menu" class="w-6 h-6"></i>
-                    </button>
-                    <h2 class="text-xl font-bold text-slate-800 dark:text-white">Attendance & Records</h2>
-                </div>
-                <div class="flex items-center gap-4">
-                    <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                    </button>
-                    <button class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="help-circle" class="w-5 h-5"></i>
-                    </button>
-                    <button id="notif-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors relative">
-                        <i data-lucide="bell" class="w-5 h-5"></i>
-                        <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-950"></span>
-                    </button>
-                    <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
-                    <!-- User Avatar -->
-                    <div x-data="{ open: false }" class="relative">
-                        <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
-                            <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
-                                <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                            </div>
-                            <div class="hidden sm:block text-left">
-                                <p class="text-sm font-medium text-slate-700 dark:text-slate-200"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                            </div>
-                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
-                        </button>
-                        <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50 mr-4" style="display: none;">
-                            <div class="block md:hidden px-4 py-2 border-b border-slate-100 dark:border-slate-700">
-                                <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                            </div>
-                            <a href="company.php" class="block px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Profile</a>
-                             <a href="company.php" class="block px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Settings</a>
-                            <div class="border-t border-slate-100 dark:border-slate-700 my-1"></div>
-                            <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
-                        </div>
-                    </div>
-                </div>
-            </header>
-
-            <!-- Horizontal Navigation -->
-            <div id="horizontal-nav" class="hidden bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-6 py-2">
-                <!-- Dynamic Nav Content -->
-            </div>
+            <?php $page_title = 'Attendance & Records'; include '../includes/dashboard_header.php'; ?>
+            <!-- Payroll Sub-Header -->
+            <?php include '../includes/payroll_header.php'; ?>
 
 
             <!-- Collapsed Toolbar (Shown when sidebar is collapsed) -->
@@ -750,90 +703,8 @@ try {
     <script>
         lucide.createIcons();
 
-        // Theme Toggle
-        const themeBtn = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            html.classList.add('dark');
-        } else {
-            html.classList.remove('dark');
-        }
-        themeBtn.addEventListener('click', () => {
-            html.classList.toggle('dark');
-            localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-        });
-
-        // Sidebar Logic
-        const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-        const sidebar = document.getElementById('sidebar');
-        const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-        const sidebarExpandBtn = document.getElementById('sidebar-expand-btn'); // Use the button inside the toolbar
-        const collapsedToolbar = document.getElementById('collapsed-toolbar');
-        const headerExpandBtn = document.getElementById('header-expand-btn'); // Optional button in header
-
-        // Notification Logic
-        const notifToggle = document.getElementById('notif-toggle');
-        const notifClose = document.getElementById('notif-close');
-        const notifPanel = document.getElementById('notif-panel');
-        const overlay = document.getElementById('overlay');
-
-        function toggleOverlay(show) {
-            if (show) overlay.classList.remove('hidden');
-            else overlay.classList.add('hidden');
-        }
-
-        if(notifToggle) {
-            notifToggle.addEventListener('click', () => {
-                notifPanel.classList.remove('translate-x-full');
-                toggleOverlay(true);
-            });
-        }
-
-        if(notifClose) {
-            notifClose.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                toggleOverlay(false);
-            });
-        }
-
-        if(overlay) {
-            overlay.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                if(sidebar) sidebar.classList.add('-translate-x-full'); 
-                toggleOverlay(false);
-            });
-        }
-
-        mobileToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('-translate-x-full');
-            if (!sidebar.classList.contains('-translate-x-full')) {
-                toggleOverlay(true);
-            } else {
-                toggleOverlay(false);
-            }
-        });
-
-        function toggleSidebar() {
-            sidebar.classList.toggle('w-64');
-            sidebar.classList.toggle('w-0');
-            sidebar.classList.toggle('p-0'); 
-            
-            if (sidebar.classList.contains('w-0')) {
-                // Collapsed state
-                collapsedToolbar.classList.remove('toolbar-hidden');
-                collapsedToolbar.classList.add('toolbar-visible');
-                if(headerExpandBtn) headerExpandBtn.classList.remove('hidden');
-            } else {
-                // Expanded state
-                collapsedToolbar.classList.add('toolbar-hidden');
-                collapsedToolbar.classList.remove('toolbar-visible');
-                if(headerExpandBtn) headerExpandBtn.classList.add('hidden');
-            }
-        }
-
-        if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-        if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-        if(headerExpandBtn) headerExpandBtn.addEventListener('click', toggleSidebar);
+    </script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
     </script>
 </body>
 </html>

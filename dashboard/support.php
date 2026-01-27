@@ -116,40 +116,10 @@ $current_page = 'support';
         <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
             
             <!-- Header -->
-            <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-                <div class="flex items-center gap-4">
-                    <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
-                    <h2 class="text-xl font-bold text-slate-800 dark:text-white">Miemploya Support</h2>
-                </div>
-                <!-- Header Actions -->
-                <div class="flex items-center gap-4">
-                    <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                    </button>
-                    <button id="notif-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors relative">
-                        <i data-lucide="bell" class="w-5 h-5"></i>
-                        <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-950"></span>
-                    </button>
-                    <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
-                    <!-- User Avatar -->
-                    <div x-data="{ open: false }" class="relative">
-                        <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
-                             <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
-                                <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                            </div>
-                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
-                        </button>
-                         <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50 mr-4" style="display: none;">
-                            <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-700">
-                                <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                            </div>
-                            <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
-                        </div>
-                    </div>
-                </div>
-            </header>
+            <!-- Header -->
+            <?php $page_title = 'Miemploya Support'; include '../includes/dashboard_header.php'; ?>
+            <!-- Admin Sub-Header -->
+            <?php include '../includes/admin_header.php'; ?>
 
             <!-- Horizontal Navigation -->
             <div id="horizontal-nav" class="hidden bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-6 py-2">
@@ -429,89 +399,6 @@ $current_page = 'support';
 
 
     <!-- Script Logic -->
-    <script>
-        lucide.createIcons();
-
-        // Theme Logic
-        const themeBtn = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            html.classList.add('dark');
-        } else {
-            html.classList.remove('dark');
-        }
-        if(themeBtn) {
-            themeBtn.addEventListener('click', () => {
-                html.classList.toggle('dark');
-                localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-            });
-        }
-
-        // Sidebar Logic
-        const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-        const sidebar = document.getElementById('sidebar');
-        const collapsedToolbar = document.getElementById('collapsed-toolbar');
-        const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-        const sidebarExpandBarBtn = document.getElementById('sidebar-expand-bar-btn');
-
-        // Combined Toggle Logic for System Sidebar
-        if(mobileToggle && sidebar) {
-            mobileToggle.addEventListener('click', () => {
-                sidebar.classList.toggle('-translate-x-full');
-            });
-        }
-        
-        // Notifications Logic (System Standard)
-        const notifToggle = document.getElementById('notif-toggle');
-        const notifClose = document.getElementById('notif-close');
-        const notifPanel = document.getElementById('notif-panel');
-        const overlay = document.getElementById('overlay');
-
-        function toggleOverlay(show) {
-            if(overlay) {
-                if (show) overlay.classList.remove('hidden');
-                else overlay.classList.add('hidden');
-            }
-        }
-
-        if(notifToggle && notifPanel) {
-            notifToggle.addEventListener('click', () => {
-                notifPanel.classList.remove('translate-x-full');
-                toggleOverlay(true);
-            });
-        }
-
-        if(notifClose && notifPanel) {
-            notifClose.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                toggleOverlay(false);
-            });
-        }
-
-         if(overlay && notifPanel) {
-            overlay.addEventListener('click', () => {
-                notifPanel.classList.add('translate-x-full');
-                if(sidebar) sidebar.classList.add('-translate-x-full'); 
-                toggleOverlay(false);
-            });
-        }
-
-        // Collapse Logic (System Standard)
-        function toggleSidebar() {
-            if(!sidebar) return;
-            sidebar.classList.toggle('w-64');
-            sidebar.classList.toggle('w-0');
-            sidebar.classList.toggle('p-0'); 
-            if (sidebar.classList.contains('w-0')) {
-                if(collapsedToolbar) { collapsedToolbar.style.display = 'flex'; collapsedToolbar.classList.remove('toolbar-hidden'); }
-            } else {
-                if(collapsedToolbar) { collapsedToolbar.style.display = 'none'; collapsedToolbar.classList.add('toolbar-hidden'); }
-            }
-        }
-        if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-        const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-        if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-
-    </script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

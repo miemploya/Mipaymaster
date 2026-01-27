@@ -83,78 +83,8 @@ $company_name = $company['name'] ?? 'Company';
     <!-- MAIN CONTENT WRAPPER -->
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         
-        <!-- B. TOP HEADER BAR -->
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-                <div class="flex items-center gap-4">
-                    <!-- Mobile Toggle (Visible only on mobile) -->
-                    <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                        <i data-lucide="menu" class="w-6 h-6"></i>
-                    </button>
-                    
-                    <!-- Mobile Logo -->
-                    <a href="../index.php" class="md:hidden flex items-center gap-2">
-                        <img src="../assets/images/logo-light.png" alt="Mipaymaster" class="h-10 w-auto object-contain block dark:hidden">
-                        <img src="../assets/images/logo-dark.png" alt="Mipaymaster" class="h-10 w-auto object-contain hidden dark:block">
-                    </a>
-
-                    <h2 class="hidden md:block text-xl font-bold text-slate-800 dark:text-white">Employer Dashboard</h2>
-                </div>
-
-                <div class="flex items-center gap-4">
-                    <!-- Theme Toggle -->
-                    <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                    </button>
-
-                    <button class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                        <i data-lucide="help-circle" class="w-5 h-5"></i>
-                    </button>
-
-                    <!-- Notification Bell -->
-                    <button id="notif-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors relative">
-                        <i data-lucide="bell" class="w-5 h-5"></i>
-                        <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-950"></span>
-                    </button>
-
-                    <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
-
-                    <!-- User Avatar -->
-                    <div x-data="{ open: false }" class="relative">
-                        <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
-                            <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
-                                <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                            </div>
-                            <div class="hidden sm:block text-left">
-                                <p class="text-sm font-medium text-slate-700 dark:text-slate-200"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400">Manager</p>
-                            </div>
-                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
-                        </button>
-                        
-                        <!-- Dropdown Menu -->
-                        <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50" style="display: none;">
-                            <a href="company.php" class="block px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Profile</a>
-                            <a href="company.php" class="block px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Settings</a>
-                            <div class="border-t border-slate-100 dark:border-slate-700 my-1"></div>
-                            <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
-                        </div>
-                    </div>
-                </div>
-            </header>
-
-        <!-- Horizontal Nav (Hidden by default) -->
-        <div id="horizontal-nav" class="hidden bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-6 py-2">
-            <!-- Dynamic Nav Content -->
-        </div>
-
-            <!-- C. COLLAPSED TOOLBAR (Hidden by default, shown when Sidebar is w-0) -->
-            <div id="collapsed-toolbar" class="toolbar-hidden w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 shadow-sm z-20">
-                <button id="sidebar-expand-btn" class="flex items-center gap-2 p-2 rounded-lg text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors my-2">
-                    <i data-lucide="menu" class="w-5 h-5"></i>
-                    <span class="text-sm font-medium">Show Menu</span>
-                </button>
-            </div>
+    <!-- B. TOP HEADER BAR -->
+    <?php $page_title = 'Employer Dashboard'; include '../includes/dashboard_header.php'; ?>
 
             <!-- MAIN CONTENT AREA -->
             <main class="flex-1 overflow-y-auto p-6 lg:p-8 relative scroll-smooth">
@@ -376,87 +306,8 @@ $company_name = $company['name'] ?? 'Company';
 
 
     <!-- Logic -->
+    <?php include '../includes/dashboard_scripts.php'; ?>
     <script>
-        lucide.createIcons();
-
-        const themeBtn = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            html.classList.add('dark');
-        } else {
-            html.classList.remove('dark');
-        }
-
-        themeBtn.addEventListener('click', () => {
-            html.classList.toggle('dark');
-            localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-            updateChartTheme();
-        });
-
-        const notifToggle = document.getElementById('notif-toggle');
-        const notifClose = document.getElementById('notif-close');
-        const notifPanel = document.getElementById('notif-panel');
-        const overlay = document.getElementById('overlay');
-        const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-        const sidebar = document.getElementById('sidebar');
-        const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-        const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-        const collapsedToolbar = document.getElementById('collapsed-toolbar');
-
-        function toggleOverlay(show) {
-            if (show) overlay.classList.remove('hidden');
-            else overlay.classList.add('hidden');
-        }
-
-        notifToggle.addEventListener('click', () => {
-            notifPanel.classList.remove('translate-x-full');
-            toggleOverlay(true);
-        });
-
-        notifClose.addEventListener('click', () => {
-            notifPanel.classList.add('translate-x-full');
-            toggleOverlay(false);
-        });
-
-        overlay.addEventListener('click', () => {
-            notifPanel.classList.add('translate-x-full');
-            sidebar.classList.add('-translate-x-full'); 
-            toggleOverlay(false);
-        });
-
-        mobileToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('-translate-x-full');
-            if (!sidebar.classList.contains('-translate-x-full')) {
-                toggleOverlay(true);
-            } else {
-                toggleOverlay(false);
-            }
-        });
-
-        // --- DESKTOP SIDEBAR COLLAPSE LOGIC ---
-        function toggleSidebar() {
-            // Toggle Width
-            sidebar.classList.toggle('w-64');
-            sidebar.classList.toggle('w-0');
-            sidebar.classList.toggle('p-0'); // Remove padding when collapsed to avoid artifacts
-            
-            // Toggle Controls
-            if (sidebar.classList.contains('w-0')) {
-                // Collapsed State
-                collapsedToolbar.classList.remove('toolbar-hidden');
-                collapsedToolbar.classList.add('toolbar-visible');
-            } else {
-                // Expanded State
-                collapsedToolbar.classList.add('toolbar-hidden');
-                collapsedToolbar.classList.remove('toolbar-visible');
-            }
-        }
-
-        desktopCollapseBtn.addEventListener('click', toggleSidebar);
-        sidebarExpandBtn.addEventListener('click', toggleSidebar);
-
-
         // Chart Config
         const ctx = document.getElementById('payrollChart').getContext('2d');
         let payrollChart;

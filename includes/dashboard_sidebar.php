@@ -10,6 +10,7 @@ $page_map = [
     'attendance' => 'attendance',
     'payroll' => 'payroll',
     'increments' => 'increments',
+    'loans' => 'loans',
     'report' => 'reports',
     'audit' => 'audit',
     'users' => 'users',
@@ -17,11 +18,15 @@ $page_map = [
     'billing' => 'billing',
     'tax_calculator' => 'tax_calculator',
     'support' => 'support',
+    'settings' => 'settings',
     // HR Sub-pages active state logic
     'hr_recruitment' => 'recruitment',
-    'hr_onboarding' => 'onboarding', 
-    // ... add others if they exist or map to generic 'hr'
+    'hr_onboarding' => 'onboarding',
+    'leaves' => 'leaves',
+    'hr_performance' => 'performance',
+    'hr_templates' => 'templates',
 ];
+
 
 // Fallback to manual $current_page if set, otherwise use map, otherwise default
 $current = $current_page ?? ($page_map[$filename] ?? $filename);
@@ -85,130 +90,161 @@ function isActive($page_name, $current_page) {
     </div>
 
     <!-- Navigation Menu -->
-    <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1 min-w-[16rem]">
-        
-        <!-- 1. Dashboard -->
-         <a href="index.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border mb-4 <?php echo isActive('dashboard', $current); ?>">
-            <i data-lucide="layout-dashboard" class="w-5 h-5"></i> Dashboard
-        </a>
+    <!-- DEBUG: Current page = <?php echo htmlspecialchars($current ?? 'NOT_SET'); ?> -->
+    <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1 min-w-[16rem] scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-700 overscroll-contain"
+         @scroll.debounce.200ms="saveScroll"
+         x-data="{
+            hrOpen: false,
+            payrollOpen: false,
+            financeOpen: false,
+            adminOpen: false,
+            
+            init() {
+                // Restore State
+                this.hrOpen = this.restore('hrOpen', <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates']) ? 'true' : 'false'; ?>);
+                this.payrollOpen = this.restore('payrollOpen', <?php echo in_array($current, ['payroll', 'increments', 'loans', 'attendance']) ? 'true' : 'false'; ?>);
+                this.financeOpen = this.restore('financeOpen', <?php echo in_array($current, ['wallet', 'tax_calculator', 'billing']) ? 'true' : 'false'; ?>);
+                this.adminOpen = this.restore('adminOpen', <?php echo in_array($current, ['users', 'settings', 'audit', 'support', 'reports']) ? 'true' : 'false'; ?>);
 
-        <!-- 2. Company & Employer Setup -->
-        <a href="company.php" class="flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('company', $current); ?>">
+                // Restore Scroll
+                const savedScroll = localStorage.getItem('sidebar_scroll');
+                if (savedScroll) {
+                    this.$el.scrollTop = parseInt(savedScroll);
+                }
+
+                // Watchers for sections
+                this.$watch('hrOpen', val => this.save('hrOpen', val));
+                this.$watch('payrollOpen', val => this.save('payrollOpen', val));
+                this.$watch('financeOpen', val => this.save('financeOpen', val));
+                this.$watch('adminOpen', val => this.save('adminOpen', val));
+            },
+            restore(key, def) {
+                const val = localStorage.getItem('sidebar_' + key);
+                return val !== null ? val === 'true' : def;
+            },
+            save(key, val) {
+                localStorage.setItem('sidebar_' + key, val);
+            },
+            saveScroll() {
+                localStorage.setItem('sidebar_scroll', this.$el.scrollTop);
+            }
+         }">
+
+        <!-- 1. CORE -->
+         <a href="index.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 border <?php echo isActive('dashboard', $current); ?>">
+            <i data-lucide="layout-dashboard" class="w-5 h-5 text-blue-600 dark:text-blue-400 group-hover:scale-110 transition-transform"></i> 
+            <span>Dashboard</span>
+        </a>
+        <a href="company.php" class="group flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 border <?php echo isActive('company', $current); ?>">
             <div class="flex items-center gap-3">
-                <i data-lucide="building-2" class="w-5 h-5"></i> Company Setup
+                <i data-lucide="building-2" class="w-5 h-5 text-indigo-600 dark:text-indigo-400 group-hover:scale-110 transition-transform"></i> 
+                <span>Company Setup</span>
             </div>
-            <?php if($current === 'company'): ?>
-            <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
-            <?php endif; ?>
+            <?php if($current === 'company'): ?><i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i><?php endif; ?>
+        </a>
+        <a href="employees.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 border <?php echo isActive('employees', $current); ?>">
+            <i data-lucide="users" class="w-5 h-5 text-emerald-600 dark:text-emerald-400 group-hover:scale-110 transition-transform"></i> 
+            <span>Employees</span>
         </a>
 
-        <!-- 3. Employees Management -->
-        <a href="employees.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('employees', $current); ?>">
-            <i data-lucide="users" class="w-5 h-5"></i> Employees Management
-        </a>
-
-        <!-- 4. Attendance & Records -->
-        <a href="attendance.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('attendance', $current); ?>">
-            <i data-lucide="calendar-check" class="w-5 h-5"></i> Attendance & Records
-        </a>
-
-        <!-- 5. Payroll -->
-        <a href="payroll.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('payroll', $current); ?>">
-            <i data-lucide="banknote" class="w-5 h-5"></i> Payroll
-        </a>
-
-        <!-- 5b. Leaves -->
-        <a href="leaves.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('leaves', $current); ?>">
-            <i data-lucide="calendar-off" class="w-5 h-5"></i> Leave Management
-        </a>
-
-        <!-- 5c. Loans -->
-        <a href="loans.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('loans', $current); ?>">
-            <i data-lucide="hand-coins" class="w-5 h-5"></i> Loans & Advances
-        </a>
-
-        <!-- 5c. Increments -->
-        <a href="increments.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('increments', $current); ?>">
-            <i data-lucide="trending-up" class="w-5 h-5"></i> Increments
-        </a>
-
-        <!-- 6. HR Management (Expandable) -->
-        <!-- 6. HR Management -->
-        <a href="hr_recruitment.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo in_array($current, ['recruitment', 'onboarding', 'relations', 'performance', 'templates']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
-            <i data-lucide="briefcase" class="w-5 h-5"></i> HR Management
-        </a>
-
-        <!-- 7. Reports -->
-        <a href="report.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('reports', $current); ?>">
-            <i data-lucide="file-bar-chart" class="w-5 h-5"></i> Reports
-        </a>
-
-
-
-        <!-- 8. Disbursement & Wallet -->
-        <a href="wallet.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('wallet', $current); ?>">
-            <i data-lucide="wallet" class="w-5 h-5"></i> Disbursement & Wallet
-        </a>
-
-        <!-- 9. Subscription & Billing -->
-        <a href="billing.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('billing', $current); ?>">
-             <i data-lucide="credit-card" class="w-5 h-5"></i> Subscription & Billing
-        </a>
-
-        <!-- 8. Tax Calculator -->
-        <a href="tax_calculator.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('tax_calculator', $current); ?>">
-            <i data-lucide="calculator" class="w-5 h-5"></i> Tax Calculator
-        </a>
-        
-        <!-- 9. Miemploya Support -->
-        <a href="support.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('support', $current); ?>">
-            <i data-lucide="headset" class="w-5 h-5"></i> Miemploya Support
-        </a>
-
-        <!-- 10. System Administration (Expandable) -->
-        <div x-data="{ open: <?php echo in_array($current, ['users', 'settings', 'audit']) ? 'true' : 'false'; ?> }">
-            <button @click="open = !open" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo in_array($current, ['users', 'settings', 'audit']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
-                <div class="flex items-center gap-3">
-                    <i data-lucide="shield-check" class="w-5 h-5"></i>
-                    <span>System Admin</span>
-                </div>
-                <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': open}"></i>
-            </button>
-            <div x-show="open" x-collapse class="pl-4 mt-1 space-y-1">
-                <a href="users.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('users', $current); ?>">
-                    <i data-lucide="users" class="w-4 h-4"></i> Users
-                </a>
-                <a href="settings.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('settings', $current); ?>">
-                    <i data-lucide="settings" class="w-4 h-4"></i> Settings
-                </a>
-                <a href="audit.php" class="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors border <?php echo isActive('audit', $current); ?>">
-                    <i data-lucide="shield-alert" class="w-4 h-4"></i> Audit Trail
-                </a>
+        <!-- 2. PAYROLL & COMPENSATION (Group) -->
+        <button @click="payrollOpen = !payrollOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['payroll', 'increments', 'loans', 'attendance']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
+            <div class="flex items-center gap-3">
+                <i data-lucide="banknote" class="w-5 h-5 text-violet-600 dark:text-violet-400 group-hover:scale-110 transition-transform"></i>
+                <span>Payroll Suite</span>
             </div>
+            <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': payrollOpen}"></i>
+        </button>
+        <div x-show="payrollOpen" x-collapse class="pl-4 mt-1 space-y-1">
+            <a href="payroll.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-violet-50 dark:hover:bg-violet-900/10 border <?php echo isActive('payroll', $current); ?>">
+                <i data-lucide="play-circle" class="w-4 h-4 text-violet-500/70 dark:text-violet-400/70"></i> Run Payroll
+            </a>
+            <a href="increments.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-violet-50 dark:hover:bg-violet-900/10 border <?php echo isActive('increments', $current); ?>">
+                <i data-lucide="trending-up" class="w-4 h-4 text-violet-500/70 dark:text-violet-400/70"></i> Increments
+            </a>
+            <a href="loans.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-violet-50 dark:hover:bg-violet-900/10 border <?php echo isActive('loans', $current); ?>">
+                <i data-lucide="hand-coins" class="w-4 h-4 text-violet-500/70 dark:text-violet-400/70"></i> Loans & Advances
+            </a>
+            <a href="attendance.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-violet-50 dark:hover:bg-violet-900/10 border <?php echo isActive('attendance', $current); ?>">
+                <i data-lucide="clock" class="w-4 h-4 text-violet-500/70 dark:text-violet-400/70"></i> Attendance & Lateness
+            </a>
         </div>
 
-        <!-- User Profile (Bottom) with Dynamic Photo -->
-        <div class="p-4 border-t border-slate-200 dark:border-slate-800 mt-auto">
+        <!-- 3. HR MANAGEMENT (Group) -->
+        <button @click="hrOpen = !hrOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-300 dark:border-slate-600">
-                    <?php if (!empty($_SESSION['user_photo'])): ?>
-                        <img src="../uploads/avatars/<?php echo htmlspecialchars($_SESSION['user_photo']); ?>" alt="User" class="w-full h-full object-cover">
-                    <?php else: ?>
-                        <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                    <?php endif; ?>
-                </div>
-                <div class="flex-1 min-w-0 hidden md:block">
-                    <p class="text-sm font-bold text-slate-900 dark:text-white truncate"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                    <p class="text-xs text-slate-500 dark:text-slate-400 truncate"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                </div>
+                <i data-lucide="briefcase" class="w-5 h-5 text-rose-600 dark:text-rose-400 group-hover:scale-110 transition-transform"></i>
+                <span>Human Resources</span>
             </div>
+            <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': hrOpen}"></i>
+        </button>
+        <div x-show="hrOpen" x-collapse class="pl-4 mt-1 space-y-1">
+            <a href="hr_recruitment.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('recruitment', $current); ?>">
+                <i data-lucide="user-plus" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Recruitment
+            </a>
+            <a href="hr_onboarding.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('onboarding', $current); ?>">
+                <i data-lucide="clipboard-check" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Onboarding
+            </a>
+            <a href="leaves.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('leaves', $current); ?>">
+                <i data-lucide="calendar-off" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Leave Management
+            </a>
+             <a href="hr_performance.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('performance', $current); ?>">
+                <i data-lucide="bar-chart-2" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Performance
+            </a>
         </div>
 
+        <!-- 4. FINANCE & TOOLS (Group) -->
+
+        <button @click="financeOpen = !financeOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['wallet', 'tax_calculator', 'billing']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
+            <div class="flex items-center gap-3">
+                <i data-lucide="pie-chart" class="w-5 h-5 text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform"></i>
+                <span>Finance Tools</span>
+            </div>
+            <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': financeOpen}"></i>
+        </button>
+        <div x-show="financeOpen" x-collapse class="pl-4 mt-1 space-y-1">
+            <a href="wallet.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-amber-50 dark:hover:bg-amber-900/10 border <?php echo isActive('wallet', $current); ?>">
+                <i data-lucide="wallet" class="w-4 h-4 text-amber-500/70 dark:text-amber-400/70"></i> Disbursement
+            </a>
+            <a href="tax_calculator.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-amber-50 dark:hover:bg-amber-900/10 border <?php echo isActive('tax_calculator', $current); ?>">
+                <i data-lucide="calculator" class="w-4 h-4 text-amber-500/70 dark:text-amber-400/70"></i> Tax Calculator
+            </a>
+            <a href="billing.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-amber-50 dark:hover:bg-amber-900/10 border <?php echo isActive('billing', $current); ?>">
+                 <i data-lucide="credit-card" class="w-4 h-4 text-amber-500/70 dark:text-amber-400/70"></i> Subscription
+            </a>
+        </div>
+
+        <!-- 5. SYSTEM (Group) -->
+
+        <button @click="adminOpen = !adminOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['users', 'settings', 'audit', 'reports', 'support']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
+            <div class="flex items-center gap-3">
+                <i data-lucide="settings-2" class="w-5 h-5 text-slate-500 dark:text-slate-400 group-hover:scale-110 transition-transform"></i>
+                <span>Admin & Support</span>
+            </div>
+            <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200" :class="{'rotate-180': adminOpen}"></i>
+        </button>
+         <div x-show="adminOpen" x-collapse class="pl-4 mt-1 space-y-1">
+            <a href="users.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-slate-50 dark:hover:bg-slate-800 border <?php echo isActive('users', $current); ?>">
+                <i data-lucide="users" class="w-4 h-4 text-slate-400"></i> Users
+            </a>
+            <a href="settings.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-slate-50 dark:hover:bg-slate-800 border <?php echo isActive('settings', $current); ?>">
+                <i data-lucide="settings" class="w-4 h-4 text-slate-400"></i> Configuration
+            </a>
+            <a href="audit.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-slate-50 dark:hover:bg-slate-800 border <?php echo isActive('audit', $current); ?>">
+                <i data-lucide="shield-alert" class="w-4 h-4 text-slate-400"></i> Audit Trail
+            </a>
+            <a href="report.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-slate-50 dark:hover:bg-slate-800 border <?php echo isActive('reports', $current); ?>">
+                <i data-lucide="file-bar-chart" class="w-4 h-4 text-slate-400"></i> Reports
+            </a>
+            <a href="support.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-slate-50 dark:hover:bg-slate-800 border <?php echo isActive('support', $current); ?>">
+                <i data-lucide="headset" class="w-4 h-4 text-slate-400"></i> Support
+            </a>
+        </div>
     </nav>
 
     <!-- Collapse Button (Inside Sidebar - Visible when Expanded) -->
-    <div class="hidden md:flex p-4 border-t border-slate-200 dark:border-slate-800 justify-end min-w-[16rem]">
-        <button id="sidebar-collapse-btn" class="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Collapse Sidebar">
+    <div class="hidden md:flex py-2 px-4 border-t border-slate-200 dark:border-slate-800 justify-end min-w-[16rem]">
+        <button id="sidebar-collapse-btn" class="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Collapse Sidebar">
             <i data-lucide="chevrons-left" class="w-5 h-5"></i>
         </button>
     </div>

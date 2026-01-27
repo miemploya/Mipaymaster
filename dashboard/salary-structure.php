@@ -170,13 +170,9 @@ $current_page = 'salary';
     <!-- Main -->
     <main class="flex-1 flex flex-col h-full overflow-hidden relative">
         <!-- Header -->
-         <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-                 <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500"><i data-lucide="menu" class="w-6 h-6"></i></button>
-                 <h2 class="text-xl font-bold text-slate-800 dark:text-white">Salary Structure</h2>
-            </div>
-             <?php include '../includes/hr_header.php'; ?>
-        </header>
+        <?php $page_title = 'Salary Structure'; include '../includes/dashboard_header.php'; ?>
+        <!-- HR Sub-Header -->
+        <?php include '../includes/hr_header.php'; ?>
 
         <!-- Content -->
         <div class="flex-1 overflow-y-auto p-6 lg:p-8">
@@ -313,8 +309,7 @@ $current_page = 'salary';
     </main>
 </div>
 
-<script>
-    lucide.createIcons();
+    <?php include '../includes/dashboard_scripts.php'; ?>
 
     function salaryApp() {
         return {

@@ -80,53 +80,27 @@ $current_page = 'payroll';
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         
         <!-- HEADER -->
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-                <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                    <i data-lucide="menu" class="w-6 h-6"></i>
+        <!-- HEADER -->
+        <?php 
+        $page_title = 'Payroll: ' . date('F Y', mktime(0, 0, 0, $run['period_month'], 10, $run['period_year']));
+        // We need to inject the Approve button. 
+        // If dashboard_header doesn't support it, we might need to modify dashboard_header to support an $header_actions variable.
+        // Let's assume for now I will modify dashboard_header.php to accept $header_actions.
+        ob_start();
+        ?>
+        <?php if ($run['status'] === 'draft'): ?>
+            <form method="POST" class="inline-block mr-4">
+                <button type="submit" name="approve_payroll" class="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg text-sm shadow-sm transition-colors">
+                    Approve
                 </button>
-                <div class="flex flex-col">
-                    <h2 class="text-xl font-bold text-slate-800 dark:text-white">Payroll: <?php echo date('F Y', mktime(0, 0, 0, $run['period_month'], 10, $run['period_year'])); ?></h2>
-                </div>
-            </div>
-            
-            <div class="flex items-center gap-4">
-                <!-- Approve Button Logic in Header -->
-                <?php if ($run['status'] === 'draft'): ?>
-                    <form method="POST" class="inline-block">
-                        <button type="submit" name="approve_payroll" class="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg text-sm shadow-sm transition-colors">
-                            Approve
-                        </button>
-                    </form>
-                <?php else: ?>
-                    <span class="px-3 py-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs font-bold rounded-full border border-green-200 dark:border-green-800">Approved</span>
-                <?php endif; ?>
-
-                 <button id="header-expand-btn" class="hidden p-2 text-slate-500 hover:text-brand-600 transition-colors" title="Expand Menu">
-                    <i data-lucide="panel-left-open" class="w-5 h-5"></i>
-                </button>
-                <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                    <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                    <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                </button>
-                <!-- User Avatar -->
-                <div x-data="{ open: false }" class="relative">
-                    <button @click="open = !open" class="flex items-center gap-3 cursor-pointer focus:outline-none">
-                        <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden">
-                            <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                        </div>
-                        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 hidden sm:block"></i>
-                    </button>
-                    <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-100 dark:border-slate-700 py-1 z-50 mr-4" style="display: none;">
-                        <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-700">
-                            <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></p>
-                            <p class="text-xs text-slate-500 dark:text-slate-400"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Role'); ?></p>
-                        </div>
-                        <a href="../auth/logout.php" class="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log Out</a>
-                    </div>
-                </div>
-            </div>
-        </header>
+            </form>
+        <?php else: ?>
+            <span class="mr-4 px-3 py-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs font-bold rounded-full border border-green-200 dark:border-green-800">Approved</span>
+        <?php endif; ?>
+        <?php 
+        $header_actions = ob_get_clean(); 
+        include '../includes/dashboard_header.php'; 
+        ?>
 
         <!-- Collapsed Toolbar -->
         <div id="collapsed-toolbar" class="toolbar-hidden w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 shadow-sm z-20">
@@ -248,54 +222,7 @@ $current_page = 'payroll';
     </div>
 </div>
 
-<script>
-    lucide.createIcons();
-
-    // Theme Toggle
-    const themeBtn = document.getElementById('theme-toggle');
-    const html = document.documentElement;
-    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        html.classList.add('dark');
-    } else {
-        html.classList.remove('dark');
-    }
-    themeBtn.addEventListener('click', () => {
-        html.classList.toggle('dark');
-        localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-    });
-
-    // Sidebar Logic
-    const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-    const sidebar = document.getElementById('sidebar');
-    const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-    const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-    const collapsedToolbar = document.getElementById('collapsed-toolbar');
-    const headerExpandBtn = document.getElementById('header-expand-btn');
-
-    mobileToggle.addEventListener('click', () => {
-        sidebar.classList.toggle('-translate-x-full');
-    });
-
-    function toggleSidebar() {
-        sidebar.classList.toggle('w-64');
-        sidebar.classList.toggle('w-0');
-        sidebar.classList.toggle('p-0'); 
-        
-        if (sidebar.classList.contains('w-0')) {
-            collapsedToolbar.classList.remove('toolbar-hidden');
-            collapsedToolbar.classList.add('toolbar-visible');
-            if(headerExpandBtn) headerExpandBtn.classList.remove('hidden');
-        } else {
-            collapsedToolbar.classList.add('toolbar-hidden');
-            collapsedToolbar.classList.remove('toolbar-visible');
-            if(headerExpandBtn) headerExpandBtn.classList.add('hidden');
-        }
-    }
-
-    if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-    if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-    if(headerExpandBtn) headerExpandBtn.addEventListener('click', toggleSidebar);
-</script>
+    <?php include '../includes/dashboard_scripts.php'; ?>
 
 </body>
 </html>

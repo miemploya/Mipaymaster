@@ -95,15 +95,34 @@ try {
             // Parse snapshot for detailed breakdown
             $snap = json_decode($row['snapshot_json'], true);
             
+            // Safety check - ensure $snap is a valid array
+            if (!is_array($snap)) {
+                $snap = [
+                    'breakdown' => [],
+                    'statutory' => [],
+                    'loans' => []
+                ];
+            }
+            
+            // Calculate total loan deduction
+            $loan_total = 0;
+            if (isset($snap['loans']) && is_array($snap['loans'])) {
+                foreach ($snap['loans'] as $loan_item) {
+                    if (isset($loan_item['amount'])) {
+                        $loan_total += floatval($loan_item['amount']);
+                    }
+                }
+            }
+            
             // Construct breakdown object for frontend
             $breakdown = [
-                'basic' => $snap['breakdown']['Basic Salary'] ?? 0,
-                'housing' => $snap['breakdown']['Housing Allowance'] ?? 0,
-                'transport' => $snap['breakdown']['Transport Allowance'] ?? 0,
-                'paye' => $snap['statutory']['paye'] ?? 0,
-                'pension' => $snap['statutory']['pension_employee'] ?? 0,
-                'nhis' => $snap['statutory']['nhis'] ?? 0,
-                'loan' => array_sum(array_column($snap['loans'] ?? [], 'amount'))
+                'basic' => floatval($snap['breakdown']['Basic Salary'] ?? 0),
+                'housing' => floatval($snap['breakdown']['Housing Allowance'] ?? 0),
+                'transport' => floatval($snap['breakdown']['Transport Allowance'] ?? 0),
+                'paye' => floatval($snap['statutory']['paye'] ?? 0),
+                'pension' => floatval($snap['statutory']['pension_employee'] ?? 0),
+                'nhis' => floatval($snap['statutory']['nhis'] ?? 0),
+                'loan' => $loan_total
             ];
 
             $entries[] = [
@@ -111,8 +130,8 @@ try {
                 'first_name' => $row['first_name'],
                 'last_name' => $row['last_name'],
                 'payroll_id' => $row['payroll_id'],
-                'gross_salary' => $row['gross_salary'],
-                'net_pay' => $row['net_pay'],
+                'gross_salary' => floatval($row['gross_salary']),
+                'net_pay' => floatval($row['net_pay']),
                 'breakdown' => $breakdown
             ];
             
@@ -159,10 +178,9 @@ try {
     }
     elseif ($action === 'lock_payroll') {
         $run_id = $input['run_id'];
-        // TODO: Implement lock logic (Set is_locked=1)
-        // Assume logic is here or calling function
-        // For audit sake, assume we do logic here
-        $upd = $pdo->prepare("UPDATE payroll_runs SET is_locked=1, locked_at=NOW(), locked_by=? WHERE id=? AND company_id=?");
+        
+        // Update runs status to LOCKED (using status column as primary source of truth)
+        $upd = $pdo->prepare("UPDATE payroll_runs SET status='locked', is_locked=1, locked_at=NOW(), locked_by=? WHERE id=? AND company_id=?");
         $upd->execute([$user_id, $run_id, $company_id]);
         
         // --- PROCESS LOAN REPAYMENTS ---
@@ -200,17 +218,6 @@ try {
 
         log_audit($company_id, $user_id, 'LOCK_PAYROLL', "Locked payroll Run ID: $run_id");
         echo json_encode(['status' => true, 'message' => 'Payroll Locked']);
-    }
-        
-        // Update status
-        $stmt = $pdo->prepare("UPDATE payroll_runs SET status = 'locked', locked_at = NOW(), locked_by = ? WHERE id = ? AND company_id = ?");
-        $stmt->execute([$user_id, $run_id, $company_id]);
-        
-        if ($stmt->rowCount() > 0) {
-            echo json_encode(['status' => true, 'message' => 'Payroll successfully locked.']);
-        } else {
-            echo json_encode(['status' => false, 'message' => 'Could not lock payroll. ID may be invalid.']);
-        }
     }
     else {
         echo json_encode(['status' => false, 'message' => 'Invalid action']);

@@ -155,23 +155,8 @@ $current_page = 'employees';
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         
         <!-- Header -->
-        <header class="h-16 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-30">
-            <div class="flex items-center gap-4">
-                <button id="mobile-sidebar-toggle" class="md:hidden text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                    <i data-lucide="menu" class="w-6 h-6"></i>
-                </button>
-                <h2 class="text-xl font-bold text-slate-800 dark:text-white"><?php echo $is_edit ? "Edit Employee" : "Onboard New Employee"; ?></h2>
-            </div>
-            <div class="flex items-center gap-4">
-                <button id="theme-toggle" class="p-2 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
-                    <i data-lucide="moon" class="w-5 h-5 block dark:hidden"></i>
-                    <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
-                </button>
-                <div class="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
-                    <i data-lucide="user" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
-                </div>
-            </div>
-        </header>
+        <!-- Header -->
+        <?php $page_title = $is_edit ? "Edit Employee" : "Onboard New Employee"; include '../includes/dashboard_header.php'; ?>
 
         <!-- Collapsed Toolbar -->
         <div id="collapsed-toolbar" class="toolbar-hidden w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 shadow-sm z-20">
@@ -336,56 +321,6 @@ $current_page = 'employees';
 </div>
 
 <script src="https://unpkg.com/lucide@latest"></script>
-<script>
-    lucide.createIcons();
-
-    // Theme Toggle
-    const themeBtn = document.getElementById('theme-toggle');
-    const html = document.documentElement;
-    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        html.classList.add('dark');
-    } else {
-        html.classList.remove('dark');
-    }
-    if(themeBtn) {
-        themeBtn.addEventListener('click', () => {
-            html.classList.toggle('dark');
-            localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
-        });
-    }
-
-    // Sidebar Logic
-    const mobileToggle = document.getElementById('mobile-sidebar-toggle');
-    const sidebar = document.getElementById('sidebar');
-    const collapsedToolbar = document.getElementById('collapsed-toolbar');
-    const desktopCollapseBtn = document.getElementById('sidebar-collapse-btn');
-    const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
-
-    if(mobileToggle && sidebar) {
-        mobileToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('-translate-x-full');
-        });
-    }
-
-    function toggleSidebar() {
-        if(!sidebar) return;
-        sidebar.classList.toggle('w-64');
-        sidebar.classList.toggle('w-0');
-        sidebar.classList.toggle('p-0'); 
-        
-        if(collapsedToolbar) {
-            if(sidebar.classList.contains('w-0')) {
-                collapsedToolbar.classList.remove('toolbar-hidden');
-                collapsedToolbar.classList.add('toolbar-visible');
-            } else {
-                collapsedToolbar.classList.add('toolbar-hidden');
-                collapsedToolbar.classList.remove('toolbar-visible');
-            }
-        }
-    }
-
-    if(desktopCollapseBtn) desktopCollapseBtn.addEventListener('click', toggleSidebar);
-    if(sidebarExpandBtn) sidebarExpandBtn.addEventListener('click', toggleSidebar);
-</script>
+<?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>
