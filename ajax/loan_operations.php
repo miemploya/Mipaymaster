@@ -57,8 +57,8 @@ if ($action === 'create_loan') {
             throw new Exception("Employee ID is required.");
         }
         
-        // Verify employee exists and is active
-        $stmt_verify = $pdo->prepare("SELECT id, first_name, last_name FROM employees WHERE id = ? AND company_id = ? AND employment_status = 'active'");
+        // Verify employee exists and is active (case-insensitive check)
+        $stmt_verify = $pdo->prepare("SELECT id, first_name, last_name FROM employees WHERE id = ? AND company_id = ? AND LOWER(employment_status) IN ('active', 'full time', 'probation', 'contract')");
         $stmt_verify->execute([$emp_id, $company_id]);
         $employee = $stmt_verify->fetch(PDO::FETCH_ASSOC);
         

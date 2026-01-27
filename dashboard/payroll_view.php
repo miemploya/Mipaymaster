@@ -22,13 +22,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['approve_payroll'])) {
     }
 }
 
-// Fetch Payslips (Details)
-$stmt = $pdo->prepare("SELECT p.*, e.first_name, e.last_name, e.payroll_id 
+// Fetch Payslips (Details) with snapshots for lateness deduction
+$stmt = $pdo->prepare("SELECT p.*, e.first_name, e.last_name, e.payroll_id, ps.snapshot_json
                        FROM payroll_entries p 
                        JOIN employees e ON p.employee_id = e.id 
+                       LEFT JOIN payroll_snapshots ps ON p.id = ps.payroll_entry_id
                        WHERE p.payroll_run_id = ?");
 $stmt->execute([$run_id]);
 $items = $stmt->fetchAll();
+
+// Fetch Attendance Policy to check if lateness deduction is enabled
+$stmt = $pdo->prepare("SELECT lateness_deduction_enabled FROM attendance_policies WHERE company_id = ?");
+$stmt->execute([$company_id]);
+$att_policy = $stmt->fetch();
+$show_lateness_column = $att_policy && $att_policy['lateness_deduction_enabled'];
 
 $current_page = 'payroll';
 ?>
@@ -182,6 +189,9 @@ $current_page = 'payroll';
                                     <th class="px-6 py-4 font-medium text-right">Gross Salary</th>
                                     <th class="px-6 py-4 font-medium text-right">Allowances</th>
                                     <th class="px-6 py-4 font-medium text-right">Deductions</th>
+                                    <?php if ($show_lateness_column): ?>
+                                    <th class="px-6 py-4 font-medium text-right">Lateness</th>
+                                    <?php endif; ?>
                                     <th class="px-6 py-4 font-medium text-right">Net Pay</th>
                                     <th class="px-6 py-4 font-medium text-right">Action</th>
                                 </tr>
@@ -202,6 +212,19 @@ $current_page = 'payroll';
                                     <td class="px-6 py-4 text-right text-red-600 dark:text-red-400">
                                         <?php echo number_format($item['total_deductions'], 2); ?>
                                     </td>
+                                    <?php if ($show_lateness_column): ?>
+                                    <td class="px-6 py-4 text-right">
+                                        <?php 
+                                        $snapshot = json_decode($item['snapshot_json'] ?? '{}', true);
+                                        $lateness = floatval($snapshot['attendance']['deduction'] ?? 0);
+                                        ?>
+                                        <?php if ($lateness > 0): ?>
+                                            <span class="text-amber-600 font-medium">₦<?php echo number_format($lateness, 2); ?></span>
+                                        <?php else: ?>
+                                            <span class="text-slate-400">-</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <?php endif; ?>
                                     <td class="px-6 py-4 text-right font-bold text-green-700 dark:text-green-400">
                                         <?php echo number_format($item['net_pay'], 2); ?>
                                     </td>

@@ -44,6 +44,7 @@
     // --- NOTIFICATION LOGIC ---
     if(notifToggle && notifPanel) {
         notifToggle.addEventListener('click', () => {
+            notifPanel.style.visibility = 'visible'; // Make visible first
             notifPanel.classList.remove('translate-x-full');
             toggleOverlay(true);
         });
@@ -51,6 +52,8 @@
         if(notifClose) {
             notifClose.addEventListener('click', () => {
                 notifPanel.classList.add('translate-x-full');
+                // Hide after transition completes
+                setTimeout(() => { notifPanel.style.visibility = 'hidden'; }, 300);
                 toggleOverlay(false);
             });
         }
@@ -58,7 +61,10 @@
 
     if(overlay) {
         overlay.addEventListener('click', () => {
-            if(notifPanel) notifPanel.classList.add('translate-x-full');
+            if(notifPanel) {
+                notifPanel.classList.add('translate-x-full');
+                setTimeout(() => { notifPanel.style.visibility = 'hidden'; }, 300);
+            }
             if(sidebar) sidebar.classList.add('-translate-x-full'); 
             toggleOverlay(false);
         });

@@ -54,16 +54,34 @@ try {
         foreach($raw_entries as $row) {
             $snap = json_decode($row['snapshot_json'], true);
             
+            // Safety check for malformed snapshot
+            if (!is_array($snap)) {
+                $snap = ['breakdown' => [], 'statutory' => [], 'loans' => []];
+            }
+            
             // Extract common components
             // Note: Keys in breakdown match Component Names
-            $basic = $snap['breakdown']['Basic Salary'] ?? 0;
-            $housing = $snap['breakdown']['Housing Allowance'] ?? 0;
-            $transport = $snap['breakdown']['Transport Allowance'] ?? 0;
+            $basic = floatval($snap['breakdown']['Basic Salary'] ?? 0);
+            $housing = floatval($snap['breakdown']['Housing Allowance'] ?? 0);
+            $transport = floatval($snap['breakdown']['Transport Allowance'] ?? 0);
             
-            $paye = $snap['statutory']['paye'] ?? 0;
-            $pension = $snap['statutory']['pension_employee'] ?? 0;
-            $nhis = $snap['statutory']['nhis'] ?? 0;
-            $nhf = $snap['statutory']['nhf'] ?? 0;
+            $paye = floatval($snap['statutory']['paye'] ?? 0);
+            $pension = floatval($snap['statutory']['pension_employee'] ?? 0);
+            $nhis = floatval($snap['statutory']['nhis'] ?? 0);
+            $nhf = floatval($snap['statutory']['nhf'] ?? 0);
+            
+            // Calculate loan deduction from snapshot
+            $loan_total = 0;
+            if (isset($snap['loans']) && is_array($snap['loans'])) {
+                foreach ($snap['loans'] as $loan_item) {
+                    if (isset($loan_item['amount'])) {
+                        $loan_total += floatval($loan_item['amount']);
+                    }
+                }
+            }
+            
+            // Extract attendance/lateness deduction
+            $lateness_deduction = floatval($snap['attendance']['deduction'] ?? 0);
             
             $row['breakdown'] = [
                 'basic' => $basic,
@@ -72,7 +90,9 @@ try {
                 'paye' => $paye,
                 'pension' => $pension,
                 'nhis' => $nhis,
-                'nhf' => $nhf
+                'nhf' => $nhf,
+                'loan' => $loan_total,
+                'lateness' => $lateness_deduction
             ];
             unset($row['snapshot_json']); // Remove heavy json string
             $entries[] = $row;

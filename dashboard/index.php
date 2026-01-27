@@ -80,6 +80,33 @@ $company_name = $company['name'] ?? 'Company';
     <!-- Fixed on mobile, Relative on Desktop. Collapses to w-0 on Desktop. -->
     <?php $current_page = 'dashboard'; include '../includes/dashboard_sidebar.php'; ?>
 
+    <!-- NOTIFICATIONS PANEL (SLIDE-OVER) - Starts off-screen -->
+    <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
+        <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
+            <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+        </div>
+        <div class="p-4 space-y-4 overflow-y-auto h-[calc(100vh-64px)]">
+            <div class="p-3 bg-brand-50 dark:bg-brand-900/10 rounded-lg border-l-4 border-brand-500">
+                <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Payroll Completed</p>
+                <p class="text-xs text-slate-600 dark:text-slate-400">January 2026 payroll has been processed successfully.</p>
+                <div class="mt-2 flex gap-2">
+                    <button class="text-xs text-brand-600 font-medium hover:underline">View</button>
+                </div>
+            </div>
+            <div class="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800">
+                <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Approval Required</p>
+                <p class="text-xs text-slate-600 dark:text-slate-400">2 leave requests are pending your approval.</p>
+                <div class="mt-2 flex gap-2">
+                    <button class="text-xs text-brand-600 font-medium hover:underline">Review</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Overlay -->
+    <div id="overlay" class="fixed inset-0 bg-black/50 z-30 hidden"></div>
+
     <!-- MAIN CONTENT WRAPPER -->
     <div class="flex-1 flex flex-col h-full overflow-hidden w-full relative">
         
@@ -276,33 +303,6 @@ $company_name = $company['name'] ?? 'Company';
                 </div>
             </main>
         </div>
-
-        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) -->
-        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
-            <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
-                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
-                <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
-            </div>
-            <div class="p-4 space-y-4 overflow-y-auto h-[calc(100vh-64px)]">
-                <div class="p-3 bg-brand-50 dark:bg-brand-900/10 rounded-lg border-l-4 border-brand-500">
-                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Payroll Completed</p>
-                    <p class="text-xs text-slate-600 dark:text-slate-400">January 2026 payroll has been processed successfully.</p>
-                    <div class="mt-2 flex gap-2">
-                        <button class="text-xs text-brand-600 font-medium hover:underline">View</button>
-                    </div>
-                </div>
-                <div class="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800">
-                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Approval Required</p>
-                    <p class="text-xs text-slate-600 dark:text-slate-400">2 leave requests are pending your approval.</p>
-                    <div class="mt-2 flex gap-2">
-                        <button class="text-xs text-brand-600 font-medium hover:underline">Review</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Overlay -->
-        <div id="overlay" class="fixed inset-0 bg-black/50 z-30 hidden"></div>
 
 
     <!-- Logic -->

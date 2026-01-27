@@ -47,24 +47,14 @@ $all_employees = $emps->fetchAll(PDO::FETCH_ASSOC);
         <!-- Payroll Sub-Header -->
         <?php include '../includes/payroll_header.php'; ?>
         
-        <!-- Additional Header Action for Loans (Restored after include) -->
-        <div class="fixed top-20 right-6 z-20">
-             <!-- This button was in the header. Moving it to the page body or keeping it in header is tricky with include.
-                  The include has a rigid structure. `index.php` goal is uniformity.
-                  However, `loans.php` had a "New Loan Request" button in the header.
-                  The new header design does NOT have space for custom buttons easily.
-                  I will place it below the header for now, or use a portal if I could.
-                  Actually, best practice for uniformity is action buttons in the main content area (like Quick Actions in dashboard).
-                  I will place it in the Page Title area? No, the include renders the title.
-                  
-                  Let's put it in the top of Main Content as a "Toolbar" or just float it.
-                  I'll place it back in the main content area's top bar which already has Tabs.
-                  Wait, line 50 had the button.
-                  I will move this button to the Tabs area (line 57).
-             -->
+        <!-- Collapsed Toolbar (Expand Button) -->
+        <div id="collapsed-toolbar" class="toolbar-hidden w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 shadow-sm z-20">
+            <button id="sidebar-expand-btn" class="flex items-center gap-2 p-2 rounded-lg text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors my-2">
+                <i data-lucide="menu" class="w-5 h-5"></i> <span class="text-sm font-medium">Show Menu</span>
+            </button>
         </div>
 
-        <main class="flex-1 overflow-y-auto p-6 lg:p-8">
+        <main class="flex-1 overflow-y-auto p-6 lg:p-8 bg-slate-50 dark:bg-slate-900" x-data="loanModalData()">
             <!-- Tabs -->
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200 dark:border-slate-800 mb-6 pb-2">
                 <div class="flex gap-4">

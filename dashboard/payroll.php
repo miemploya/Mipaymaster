@@ -106,8 +106,8 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 sheetData: [],    // Stores entries
                 
                 // FILTER DATA
-                deptList: <?php echo json_encode($departments); ?>,
-                catList: <?php echo json_encode($categories); ?>,
+                deptList: <?php echo json_encode($departments ?: [], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>,
+                catList: <?php echo json_encode($categories ?: [], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>,
                 
                 // SELECTION
                 selectedDept: '',
@@ -169,6 +169,7 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 },
 
                 async runPayroll() {
+                    console.log('runPayroll() called');
                     this.loading = true;
                     this.errorMsg = '';
                     try {
@@ -177,28 +178,36 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             month: this.currentPeriod.month,
                             year: this.currentPeriod.year
                         };
+                        console.log('Sending request:', formData);
                         
                         const res = await fetch('ajax/payroll_operations.php', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(formData)
                         });
+                        console.log('Response status:', res.status);
                         const data = await res.json();
+                        console.log('Response data:', data);
                         
                         if(data.status) {
                             // Success
+                            console.log('Success! Changing view to sheet');
                             this.changeView('sheet');
                         } else {
+                            console.log('Error from server:', data.message);
                             alert('Error: ' + data.message);
                         }
                     } catch(e) {
+                        console.error('Exception:', e);
                         alert('System Error: ' + e.message);
                     } finally {
                         this.loading = false;
+                        console.log('runPayroll() finished');
                     }
                 },
 
                 async fetchSheet() {
+                    console.log('fetchSheet() called');
                     this.loading = true;
                     try {
                         const formData = {
@@ -206,14 +215,18 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             month: this.currentPeriod.month,
                             year: this.currentPeriod.year
                         };
+                        console.log('fetchSheet sending:', formData);
                         const res = await fetch('ajax/payroll_operations.php', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(formData)
                         });
+                        console.log('fetchSheet response status:', res.status);
                         const data = await res.json();
+                        console.log('fetchSheet response data:', data);
                         
                         if(data.status && data.run) {
+                            console.log('fetchSheet: Got run data, entries count:', data.entries?.length);
                             this.payrollRun = data.run; // id, status, etc.
                             this.sheetData = data.entries;
                             // Update Totals
@@ -223,9 +236,11 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                 net: parseFloat(data.totals.total_net || 0),
                                 count: parseInt(data.totals.employee_count || 0)
                             };
+                            console.log('fetchSheet: totals updated:', this.totals);
                             // Update Anomalies
                             this.anomalies = data.anomalies || [];
                         } else {
+                            console.log('fetchSheet: No run found or status false');
                             // No run found
                             this.payrollRun = null;
                             this.sheetData = [];
@@ -233,9 +248,10 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             this.anomalies = [];
                         }
                     } catch(e) {
-                        console.error(e);
+                        console.error('fetchSheet exception:', e);
                     } finally {
                         this.loading = false;
+                        console.log('fetchSheet() finished, sheetData length:', this.sheetData?.length);
                     }
                 },
 
@@ -272,7 +288,12 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 },
 
                 formatCurrency(amount) {
-                    return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(amount);
+                    // Defensive handling for null, undefined, or non-numeric values
+                    const num = parseFloat(amount);
+                    if (isNaN(num)) {
+                        return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(0);
+                    }
+                    return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(num);
                 }
             }
         }
@@ -283,8 +304,8 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <!-- MANDATORY SIDEBAR STRUCTURE -->
     <?php include '../includes/dashboard_sidebar.php'; ?>
 
-        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) -->
-        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
+        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) - Starts hidden -->
+        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
             <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
                 <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
@@ -318,11 +339,18 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <!-- Payroll Sub-Header -->
             <?php include '../includes/payroll_header.php'; ?>
 
+            <!-- Collapsed Toolbar (Expand Button) -->
+            <div id="collapsed-toolbar" class="toolbar-hidden w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center px-6 shrink-0 shadow-sm z-20">
+                <button id="sidebar-expand-btn" class="flex items-center gap-2 p-2 rounded-lg text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors my-2">
+                    <i data-lucide="menu" class="w-5 h-5"></i> <span class="text-sm font-medium">Show Menu</span>
+                </button>
+            </div>
+
             <!-- Main Scrollable Area -->
             <main class="flex-1 overflow-y-auto p-6 lg:p-8 bg-slate-50 dark:bg-slate-900 scroll-smooth">
                 
                 <!-- SUCCESS TOAST -->
-                <div x-show="runSuccess" x-transition class="fixed top-20 right-6 bg-green-600 text-white px-6 py-4 rounded-lg shadow-xl z-50 flex items-center gap-3">
+                <div x-cloak x-show="runSuccess" x-transition class="fixed top-20 right-6 bg-green-600 text-white px-6 py-4 rounded-lg shadow-xl z-50 flex items-center gap-3">
                     <i data-lucide="check-circle" class="w-6 h-6"></i>
                     <div>
                         <p class="font-bold">Payroll Posted Successfully!</p>
@@ -559,6 +587,7 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <th class="bg-red-50/50 dark:bg-red-900/10 border-l border-slate-200 dark:border-slate-800 min-w-[100px]">PAYE</th>
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">Pension</th>
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">NHIS</th>
+                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-amber-600 dark:text-amber-400">Lateness</th>
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Loan</th>
                                     
                                     <!-- Summary -->
@@ -583,6 +612,7 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.paye)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.pension)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhis)"></td>
+                                        <td class="bg-red-50/5 dark:bg-transparent text-amber-600" x-text="formatCurrency(emp.breakdown.lateness || 0)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.loan)"></td>
                                         
                                         <!-- Net -->

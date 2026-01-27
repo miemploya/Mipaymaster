@@ -21,6 +21,9 @@
         <a href="leaves.php" class="px-4 py-2 text-sm font-medium rounded-t-lg transition-colors border-b-2 <?php echo ($current_tab == 'leaves') ? 'text-brand-600 border-brand-600 bg-brand-50 dark:bg-brand-900/10' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 border-transparent hover:border-slate-300'; ?>">
             Leave Management
         </a>
+        <a href="leave_policy.php" class="px-4 py-2 text-sm font-medium rounded-t-lg transition-colors border-b-2 <?php echo ($current_tab == 'leave_policy') ? 'text-brand-600 border-brand-600 bg-brand-50 dark:bg-brand-900/10' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 border-transparent hover:border-slate-300'; ?>">
+            Leave Policy
+        </a>
         <a href="hr_templates.php" class="px-4 py-2 text-sm font-medium rounded-t-lg transition-colors border-b-2 <?php echo ($current_tab == 'templates') ? 'text-brand-600 border-brand-600 bg-brand-50 dark:bg-brand-900/10' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 border-transparent hover:border-slate-300'; ?>">
             Templates
         </a>

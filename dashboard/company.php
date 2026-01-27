@@ -820,6 +820,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $enable_ip = isset($_POST['enable_ip']) ? 1 : 0;
         $require_supervisor = isset($_POST['require_supervisor']) ? 1 : 0;
         
+        // Lateness deduction fields
+        $lateness_enabled = isset($_POST['lateness_deduction_enabled']) ? 1 : 0;
+        $lateness_amount = floatval($_POST['lateness_deduction_amount'] ?? 0);
+        $lateness_type = $_POST['lateness_deduction_type'] ?? 'fixed';
+        $per_minute_rate = floatval($_POST['lateness_per_minute_rate'] ?? 0);
+        $max_deduction = floatval($_POST['max_lateness_deduction'] ?? 0);
+        
+        // Per-method lateness toggles
+        $apply_manual = isset($_POST['lateness_apply_manual']) ? 1 : 0;
+        $apply_self = isset($_POST['lateness_apply_self']) ? 1 : 0;
+        $apply_biometric = isset($_POST['lateness_apply_biometric']) ? 1 : 0;
+        
         try {
             $pdo->beginTransaction();
             
@@ -831,15 +843,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $check = $pdo->prepare("SELECT id FROM attendance_policies WHERE company_id = ?");
             $check->execute([$company_id]);
             if ($check->rowCount() == 0) {
-                 $stmt = $pdo->prepare("INSERT INTO attendance_policies (company_id, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_minutes, enable_ip_logging, require_supervisor_confirmation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                 $stmt->execute([$company_id, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor]);
+                 $stmt = $pdo->prepare("INSERT INTO attendance_policies (company_id, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_minutes, enable_ip_logging, require_supervisor_confirmation, lateness_deduction_enabled, lateness_deduction_amount, lateness_deduction_type, lateness_per_minute_rate, max_lateness_deduction, lateness_apply_manual, lateness_apply_self, lateness_apply_biometric) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                 $stmt->execute([$company_id, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric]);
             } else {
-                 $stmt = $pdo->prepare("UPDATE attendance_policies SET check_in_start=?, check_in_end=?, check_out_start=?, check_out_end=?, grace_period_minutes=?, enable_ip_logging=?, require_supervisor_confirmation=? WHERE company_id=?");
-                 $stmt->execute([$check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $company_id]);
+                 $stmt = $pdo->prepare("UPDATE attendance_policies SET check_in_start=?, check_in_end=?, check_out_start=?, check_out_end=?, grace_period_minutes=?, enable_ip_logging=?, require_supervisor_confirmation=?, lateness_deduction_enabled=?, lateness_deduction_amount=?, lateness_deduction_type=?, lateness_per_minute_rate=?, max_lateness_deduction=?, lateness_apply_manual=?, lateness_apply_self=?, lateness_apply_biometric=? WHERE company_id=?");
+                 $stmt->execute([$check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric, $company_id]);
             }
             
             $pdo->commit();
-            $success_msg = "Attendance policy updated.";
+            $_SESSION['flash_success'] = "Attendance policy updated successfully.";
             log_audit($company_id, $_SESSION['user_id'], 'UPDATE_ATTENDANCE_POLICY', "Updated attendance method to: $method");
             header("Location: company.php?tab=attendance");
             exit;
@@ -1092,7 +1104,16 @@ $attendance_policy = [
     'method' => $company['attendance_method'] ?? 'manual',
     'check_in_start' => '08:00', 'check_in_end' => '09:00',
     'check_out_start' => '17:00','check_out_end' => '18:00',
-    'grace_period' => 15, 'enable_ip' => 1, 'require_supervisor' => 1
+    'grace_period' => 15, 'enable_ip' => 1, 'require_supervisor' => 1,
+    'lateness_deduction_enabled' => 0,
+    'lateness_deduction_amount' => 0,
+    'lateness_deduction_type' => 'fixed',
+    'lateness_per_minute_rate' => 0,
+    'max_lateness_deduction' => 0,
+    // Per-method lateness toggles
+    'lateness_apply_manual' => 0,    // Manual: OFF by default (admin enters time)
+    'lateness_apply_self' => 1,      // Self check-in: ON by default
+    'lateness_apply_biometric' => 1  // Biometric: ON by default
 ];
 try {
     $stmt = $pdo->prepare("SELECT * FROM attendance_policies WHERE company_id = ?");
@@ -1106,6 +1127,15 @@ try {
         $attendance_policy['grace_period'] = (int)$pol['grace_period_minutes'];
         $attendance_policy['enable_ip'] = (int)$pol['enable_ip_logging'];
         $attendance_policy['require_supervisor'] = (int)$pol['require_supervisor_confirmation'];
+        $attendance_policy['lateness_deduction_enabled'] = (int)($pol['lateness_deduction_enabled'] ?? 0);
+        $attendance_policy['lateness_deduction_amount'] = floatval($pol['lateness_deduction_amount'] ?? 0);
+        $attendance_policy['lateness_deduction_type'] = $pol['lateness_deduction_type'] ?? 'fixed';
+        $attendance_policy['lateness_per_minute_rate'] = floatval($pol['lateness_per_minute_rate'] ?? 0);
+        $attendance_policy['max_lateness_deduction'] = floatval($pol['max_lateness_deduction'] ?? 0);
+        // Per-method toggles
+        $attendance_policy['lateness_apply_manual'] = (int)($pol['lateness_apply_manual'] ?? 0);
+        $attendance_policy['lateness_apply_self'] = (int)($pol['lateness_apply_self'] ?? 1);
+        $attendance_policy['lateness_apply_biometric'] = (int)($pol['lateness_apply_biometric'] ?? 1);
     }
 } catch (Exception $e) { /* ignore */ }
 
@@ -1188,7 +1218,16 @@ try {
                     check_out_end: '<?php echo $attendance_policy['check_out_end']; ?>',
                     grace: <?php echo $attendance_policy['grace_period']; ?>,
                     ip: <?php echo $attendance_policy['enable_ip'] ? 'true' : 'false'; ?>,
-                    supervisor: <?php echo $attendance_policy['require_supervisor'] ? 'true' : 'false'; ?>
+                    supervisor: <?php echo $attendance_policy['require_supervisor'] ? 'true' : 'false'; ?>,
+                    lateness_enabled: <?php echo $attendance_policy['lateness_deduction_enabled'] ? 'true' : 'false'; ?>,
+                    lateness_type: '<?php echo $attendance_policy['lateness_deduction_type']; ?>',
+                    lateness_amount: <?php echo $attendance_policy['lateness_deduction_amount']; ?>,
+                    per_minute_rate: <?php echo $attendance_policy['lateness_per_minute_rate']; ?>,
+                    max_deduction: <?php echo $attendance_policy['max_lateness_deduction']; ?>,
+                    // Per-method lateness toggles
+                    apply_manual: <?php echo $attendance_policy['lateness_apply_manual'] ? 'true' : 'false'; ?>,
+                    apply_self: <?php echo $attendance_policy['lateness_apply_self'] ? 'true' : 'false'; ?>,
+                    apply_biometric: <?php echo $attendance_policy['lateness_apply_biometric'] ? 'true' : 'false'; ?>
                 },
                 
                 // FORMS
@@ -1664,8 +1703,8 @@ try {
     <!-- A. LEFT SIDEBAR -->
     <?php $current_page = 'company'; include '../includes/dashboard_sidebar.php'; ?>
 
-        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) -->
-        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
+        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) - Starts hidden -->
+        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
             <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
                 <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
@@ -1722,17 +1761,50 @@ try {
                         <div class="mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800"><?php echo $error_msg; ?></div>
                     <?php endif; ?>
 
-                    <!-- Tabs -->
-                    <div class="mb-8 overflow-x-auto">
-                        <div class="flex flex-nowrap gap-2 min-w-max p-1 bg-slate-100/50 dark:bg-slate-900/50 rounded-xl border border-slate-200/60 dark:border-slate-800/60">
-                            <button @click="currentTab = 'profile'" :class="currentTab === 'profile' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="building" class="w-4 h-4"></i> Profile</button>
-                            <button @click="currentTab = 'departments'" :class="currentTab === 'departments' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="users" class="w-4 h-4"></i> Departments</button>
-                            <button @click="currentTab = 'items'" :class="currentTab === 'items' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="wallet" class="w-4 h-4"></i> Payroll Items</button>
-                            <button @click="currentTab = 'components'" :class="currentTab === 'components' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="layers" class="w-4 h-4"></i> Components</button>
-                            <button @click="currentTab = 'categories'" :class="currentTab === 'categories' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="list" class="w-4 h-4"></i> Categories</button>
-                            <button @click="currentTab = 'statutory'" :class="currentTab === 'statutory' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="scale" class="w-4 h-4"></i> Statutory</button>
-                            <button @click="currentTab = 'behaviour'" :class="currentTab === 'behaviour' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="sliders" class="w-4 h-4"></i> Behaviour</button>
-                            <button @click="currentTab = 'attendance'" :class="currentTab === 'attendance' ? 'bg-brand-600 text-white shadow-brand-500/30 hover:bg-brand-700' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300'" class="rounded-lg py-2.5 px-5 text-sm font-medium transition-all duration-200 flex items-center gap-2 outline-none focus:ring-2 focus:ring-brand-500/20"><i data-lucide="clock" class="w-4 h-4"></i> Attendance Policy</button>
+                    <!-- Tabs - Icon on Top Design -->
+                    <div class="mb-8">
+                        <div class="grid grid-cols-4 sm:grid-cols-8 gap-2 p-2 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                            
+                            <button @click="currentTab = 'profile'" :class="currentTab === 'profile' ? 'bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lg shadow-brand-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-brand-50 dark:hover:bg-slate-700 hover:text-brand-600 dark:hover:text-brand-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="building-2" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Profile</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'departments'" :class="currentTab === 'departments' ? 'bg-gradient-to-br from-violet-500 to-violet-700 text-white shadow-lg shadow-violet-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-violet-50 dark:hover:bg-slate-700 hover:text-violet-600 dark:hover:text-violet-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="users" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Departments</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'items'" :class="currentTab === 'items' ? 'bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-lg shadow-emerald-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-emerald-50 dark:hover:bg-slate-700 hover:text-emerald-600 dark:hover:text-emerald-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="wallet" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Payroll Items</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'components'" :class="currentTab === 'components' ? 'bg-gradient-to-br from-cyan-500 to-cyan-700 text-white shadow-lg shadow-cyan-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-cyan-50 dark:hover:bg-slate-700 hover:text-cyan-600 dark:hover:text-cyan-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="layers" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Components</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'categories'" :class="currentTab === 'categories' ? 'bg-gradient-to-br from-amber-500 to-amber-700 text-white shadow-lg shadow-amber-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-amber-50 dark:hover:bg-slate-700 hover:text-amber-600 dark:hover:text-amber-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="list" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Categories</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'statutory'" :class="currentTab === 'statutory' ? 'bg-gradient-to-br from-rose-500 to-rose-700 text-white shadow-lg shadow-rose-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-rose-50 dark:hover:bg-slate-700 hover:text-rose-600 dark:hover:text-rose-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="scale" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Statutory</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'behaviour'" :class="currentTab === 'behaviour' ? 'bg-gradient-to-br from-indigo-500 to-indigo-700 text-white shadow-lg shadow-indigo-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="sliders" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Behaviour</span>
+                            </button>
+                            
+                            <button @click="currentTab = 'attendance'" :class="currentTab === 'attendance' ? 'bg-gradient-to-br from-teal-500 to-teal-700 text-white shadow-lg shadow-teal-500/30 scale-105' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-teal-50 dark:hover:bg-slate-700 hover:text-teal-600 dark:hover:text-teal-400 hover:scale-102'" class="relative flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl text-center transition-all duration-200 group">
+                                <i data-lucide="clock" class="w-5 h-5"></i>
+                                <span class="text-xs font-semibold">Attendance</span>
+                            </button>
+                            
                         </div>
                     </div>
 
@@ -1858,6 +1930,100 @@ try {
                                          <p class="text-sm text-slate-600 dark:text-slate-400 mb-4">Biometric integrations are configured in the <a href="attendance.php?tab=biometrics" class="text-brand-600 font-bold hover:underline">Attendance Module</a>.</p>
                                          <p class="text-xs text-slate-500">Use this setting to declare Biometrics as the company's primary truth source for payroll.</p>
                                     </div>
+                                    
+                                    <!-- LATENESS DEDUCTION SECTION - Always Visible -->
+                                    <div class="mt-6 p-6 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800">
+                                        <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="alert-circle" class="w-5 h-5 text-amber-500"></i> Lateness Deduction Settings</h4>
+                                        <div class="space-y-4">
+                                            <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-amber-400 transition-colors">
+                                                <div>
+                                                    <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Enable Lateness Deduction</span>
+                                                    <span class="text-xs text-slate-500">Automatically deduct from salary when employees check in late.</span>
+                                                </div>
+                                                <input type="checkbox" name="lateness_deduction_enabled" value="1" x-model="attendance.lateness_enabled" class="w-5 h-5 text-amber-600 rounded focus:ring-amber-500">
+                                            </label>
+                                            
+                                            <div x-show="attendance.lateness_enabled" x-transition class="space-y-4 pt-4 border-t border-amber-200 dark:border-amber-800">
+                                                <div>
+                                                    <label class="form-label">Deduction Type</label>
+                                                    <select name="lateness_deduction_type" x-model="attendance.lateness_type" class="form-input">
+                                                        <option value="fixed">Fixed Amount (per incident)</option>
+                                                        <option value="per_minute">Per Minute Late</option>
+                                                        <option value="percentage">Percentage of Daily Pay</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div class="grid grid-cols-2 gap-4">
+                                                    <div x-show="attendance.lateness_type === 'fixed'">
+                                                        <label class="form-label">Fixed Deduction Amount (₦)</label>
+                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" step="100">
+                                                    </div>
+                                                    
+                                                    <div x-show="attendance.lateness_type === 'per_minute'">
+                                                        <label class="form-label">Rate Per Minute Late (₦)</label>
+                                                        <input type="number" name="lateness_per_minute_rate" x-model="attendance.per_minute_rate" class="form-input" min="0" step="10">
+                                                    </div>
+                                                    
+                                                    <div x-show="attendance.lateness_type === 'percentage'">
+                                                        <label class="form-label">Deduction Percentage (%)</label>
+                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" max="100" step="0.5">
+                                                    </div>
+                                                    
+                                                    <div>
+                                                        <label class="form-label">Maximum Deduction Cap (₦)</label>
+                                                        <input type="number" name="max_lateness_deduction" x-model="attendance.max_deduction" class="form-input" min="0" step="100" placeholder="No limit if empty">
+                                                    </div>
+                                                </div>
+                                                
+                                                <div class="p-3 bg-amber-100 dark:bg-amber-900/30 rounded-lg border border-amber-200 dark:border-amber-700">
+                                                    <p class="text-xs text-amber-700 dark:text-amber-300">
+                                                        <i data-lucide="info" class="w-3 h-3 inline mr-1"></i>
+                                                        Lateness is calculated from <span class="font-bold">Check-In Start + Grace Period</span>. Deductions are automatically applied and shown to employees during check-in.
+                                                    </p>
+                                                </div>
+                                                
+                                                <!-- Per-Method Lateness Toggles -->
+                                                <div class="mt-4 p-4 bg-white dark:bg-slate-900 rounded-lg border border-amber-200 dark:border-amber-700">
+                                                    <h5 class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-3">Apply Lateness Deduction To:</h5>
+                                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                                        <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-amber-400 transition-colors" :class="{'bg-amber-50 border-amber-300': attendance.apply_manual}">
+                                                            <input type="checkbox" name="lateness_apply_manual" value="1" x-model="attendance.apply_manual" class="w-4 h-4 text-amber-600 rounded focus:ring-amber-500">
+                                                            <span class="font-medium text-slate-700 dark:text-slate-200">Manual Entry</span>
+                                                        </label>
+                                                        <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-amber-400 transition-colors" :class="{'bg-amber-50 border-amber-300': attendance.apply_self}">
+                                                            <input type="checkbox" name="lateness_apply_self" value="1" x-model="attendance.apply_self" class="w-4 h-4 text-amber-600 rounded focus:ring-amber-500">
+                                                            <span class="font-medium text-slate-700 dark:text-slate-200">Self Check-in</span>
+                                                        </label>
+                                                        <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-amber-400 transition-colors" :class="{'bg-amber-50 border-amber-300': attendance.apply_biometric}">
+                                                            <input type="checkbox" name="lateness_apply_biometric" value="1" x-model="attendance.apply_biometric" class="w-4 h-4 text-amber-600 rounded focus:ring-amber-500">
+                                                            <span class="font-medium text-slate-700 dark:text-slate-200">Biometric</span>
+                                                        </label>
+                                                    </div>
+                                                    <p class="text-xs text-slate-500 mt-2">
+                                                        <i data-lucide="info" class="w-3 h-3 inline mr-1"></i>
+                                                        Only checked methods will apply automatic lateness deductions. Leave unchecked for methods with admin-verified times.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Hidden inputs to always submit all fields regardless of conditional panels -->
+                                    <input type="hidden" name="check_in_start" :value="attendance.check_in_start">
+                                    <input type="hidden" name="check_in_end" :value="attendance.check_in_end">
+                                    <input type="hidden" name="check_out_start" :value="attendance.check_out_start">
+                                    <input type="hidden" name="check_out_end" :value="attendance.check_out_end">
+                                    <input type="hidden" name="grace_period" :value="attendance.grace">
+                                    <input type="hidden" name="enable_ip" :value="attendance.ip ? 1 : 0">
+                                    <input type="hidden" name="require_supervisor" :value="attendance.supervisor ? 1 : 0">
+                                    <input type="hidden" name="lateness_deduction_enabled" :value="attendance.lateness_enabled ? 1 : 0">
+                                    <input type="hidden" name="lateness_deduction_type" :value="attendance.lateness_type">
+                                    <input type="hidden" name="lateness_deduction_amount" :value="attendance.lateness_amount">
+                                    <input type="hidden" name="lateness_per_minute_rate" :value="attendance.per_minute_rate">
+                                    <input type="hidden" name="max_lateness_deduction" :value="attendance.max_deduction">
+                                    <input type="hidden" name="lateness_apply_manual" :value="attendance.apply_manual ? 1 : 0">
+                                    <input type="hidden" name="lateness_apply_self" :value="attendance.apply_self ? 1 : 0">
+                                    <input type="hidden" name="lateness_apply_biometric" :value="attendance.apply_biometric ? 1 : 0">
                                     
                                     <div class="mt-8 flex justify-end">
                                         <button type="submit" class="px-6 py-2.5 bg-brand-600 text-white font-bold rounded-lg shadow-lg shadow-brand-500/30 hover:bg-brand-700 transition-all flex items-center gap-2">

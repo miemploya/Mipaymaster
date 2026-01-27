@@ -42,6 +42,17 @@ $stmt = $pdo->prepare("
 $stmt->execute([$employee_id]);
 $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// 5. Fetch Attendance History (Current Month)
+$current_month = date('Y-m');
+$stmt = $pdo->prepare("
+    SELECT date, check_in_time, check_out_time, status, auto_deduction_amount 
+    FROM attendance_logs 
+    WHERE employee_id = ? AND DATE_FORMAT(date, '%Y-%m') = ?
+    ORDER BY date DESC
+");
+$stmt->execute([$employee_id, $current_month]);
+$attendance_history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -62,8 +73,8 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
     </script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'); body { font-family: 'Inter', sans-serif; }</style>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'); body { font-family: 'Inter', sans-serif; } [x-cloak] { display: none !important; }</style>
 </head>
 <body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 transition-colors duration-300 min-h-screen" x-data="staffPortal()">
 
@@ -123,9 +134,9 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <button @click="clockIn()" :disabled="loading" class="w-full py-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold shadow-lg shadow-brand-500/30 transition-all active:scale-95 flex items-center justify-center gap-2">
                             <i data-lucide="log-in" class="w-5 h-5"></i> <span x-text="loading ? 'Processing...' : 'Clock In'"></span>
                         </button>
-                    <?php elseif (!$attendance['time_out']): ?>
+                    <?php elseif (!$attendance['check_out_time']): ?>
                         <div class="p-3 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 rounded-lg text-center text-sm font-medium mb-2 border border-green-100 dark:border-green-900/30">
-                            Clocked In at <?php echo date('H:i', strtotime($attendance['time_in'])); ?>
+                            Clocked In at <?php echo date('H:i', strtotime($attendance['check_in_time'])); ?>
                         </div>
                         <button @click="clockOut()" :disabled="loading" class="w-full py-4 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl font-bold transition-all active:scale-95 flex items-center justify-center gap-2">
                             <i data-lucide="log-out" class="w-5 h-5"></i> <span x-text="loading ? 'Processing...' : 'Clock Out'"></span>
@@ -134,9 +145,9 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <div class="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
                             <p class="text-sm text-slate-500">Attendance Completed</p>
                             <div class="flex justify-center gap-4 mt-2 font-mono text-sm font-bold text-slate-700 dark:text-slate-300">
-                                <span>IN: <?php echo date('H:i', strtotime($attendance['time_in'])); ?></span>
+                                <span>IN: <?php echo date('H:i', strtotime($attendance['check_in_time'])); ?></span>
                                 <span class="text-slate-300">|</span>
-                                <span>OUT: <?php echo date('H:i', strtotime($attendance['time_out'])); ?></span>
+                                <span>OUT: <?php echo date('H:i', strtotime($attendance['check_out_time'])); ?></span>
                             </div>
                         </div>
                     <?php endif; ?>
@@ -209,6 +220,59 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     <?php endforeach; ?>
                     <?php if (empty($payslips)): ?>
                         <tr><td colspan="4" class="px-6 py-8 text-center text-slate-500">No payslips found.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 4. ATTENDANCE HISTORY -->
+        <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4 mt-8">Attendance This Month</h3>
+        <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                    <tr>
+                        <th class="px-6 py-4 font-medium">Date</th>
+                        <th class="px-6 py-4 font-medium">Check In</th>
+                        <th class="px-6 py-4 font-medium">Check Out</th>
+                        <th class="px-6 py-4 font-medium text-center">Status</th>
+                        <th class="px-6 py-4 font-medium text-right">Deduction</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                    <?php foreach ($attendance_history as $log): ?>
+                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                        <td class="px-6 py-4 font-medium text-slate-900 dark:text-white">
+                            <?php echo date("D, M j", strtotime($log['date'])); ?>
+                        </td>
+                        <td class="px-6 py-4 font-mono text-slate-600 dark:text-slate-300">
+                            <?php echo $log['check_in_time'] ? date('h:i A', strtotime($log['check_in_time'])) : '-'; ?>
+                        </td>
+                        <td class="px-6 py-4 font-mono text-slate-600 dark:text-slate-300">
+                            <?php echo $log['check_out_time'] ? date('h:i A', strtotime($log['check_out_time'])) : '-'; ?>
+                        </td>
+                        <td class="px-6 py-4 text-center">
+                            <?php 
+                            $status_classes = [
+                                'present' => 'bg-green-100 text-green-700',
+                                'late' => 'bg-amber-100 text-amber-700',
+                                'absent' => 'bg-red-100 text-red-700'
+                            ];
+                            $status = strtolower($log['status']);
+                            $class = $status_classes[$status] ?? 'bg-slate-100 text-slate-700';
+                            ?>
+                            <span class="px-2 py-1 <?php echo $class; ?> rounded-full text-xs font-bold"><?php echo ucfirst($status); ?></span>
+                        </td>
+                        <td class="px-6 py-4 text-right">
+                            <?php if ($log['auto_deduction_amount'] > 0): ?>
+                                <span class="text-red-600 font-medium">-₦<?php echo number_format($log['auto_deduction_amount'], 2); ?></span>
+                            <?php else: ?>
+                                <span class="text-slate-400">-</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($attendance_history)): ?>
+                        <tr><td colspan="5" class="px-6 py-8 text-center text-slate-500">No attendance records this month.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -350,18 +414,37 @@ $payslips = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     this.currentTime = now.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute:'2-digit', second:'2-digit' });
                     this.todayDate = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
                 },
-                async clockIn() { await this.submitAttendance('in'); },
-                async clockOut() { await this.submitAttendance('out'); },
+                async clockIn() { 
+                    console.log('clockIn() called');
+                    await this.submitAttendance('in'); 
+                },
+                async clockOut() { 
+                    console.log('clockOut() called');
+                    await this.submitAttendance('out'); 
+                },
                 async submitAttendance(type) {
-                    if (!confirm('Confirm ' + (type === 'in' ? 'Clock In' : 'Clock Out') + '?')) return;
+                    console.log('submitAttendance() called with type:', type);
+                    if (!confirm('Confirm ' + (type === 'in' ? 'Clock In' : 'Clock Out') + '?')) {
+                        console.log('User cancelled');
+                        return;
+                    }
                     this.loading = true;
                     try {
-                        const fd = new FormData(); fd.append('type', type);
+                        const fd = new FormData(); 
+                        fd.append('type', type);
+                        console.log('Sending request to attendance_clock.php');
                         const res = await fetch('../ajax/attendance_clock.php', { method: 'POST', body: fd });
+                        console.log('Response status:', res.status);
                         const data = await res.json();
+                        console.log('Response data:', data);
                         alert(data.message);
                         if (data.status) window.location.reload();
-                    } catch (e) { alert('Connection error.'); } finally { this.loading = false; }
+                    } catch (e) { 
+                        console.error('Exception:', e);
+                        alert('Connection error: ' + e.message); 
+                    } finally { 
+                        this.loading = false; 
+                    }
                 },
 
                 // Leave Logic

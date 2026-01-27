@@ -53,14 +53,60 @@ $company_logo_url = $company['logo_url'] ?? null;
 // Function to check if a page is active
 function isActive($page_name, $current_page) {
     return $current_page === $page_name ? 
-        'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 border-amber-200 dark:border-amber-800/50' : 
-        'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent';
+        'text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/20 border-brand-200 dark:border-brand-800/50 shadow-sm' : 
+        'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent hover:border-slate-200 dark:hover:border-slate-700';
 }
 ?>
-<aside id="sidebar" class="sidebar-transition fixed md:relative z-40 w-64 bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 flex flex-col h-[calc(100vh-64px)] md:h-full top-16 md:top-0 -translate-x-full md:translate-x-0 shadow-xl md:shadow-none whitespace-nowrap overflow-x-hidden group">
+<style>
+    /* Modern Sidebar Scrolling */
+    #sidebar nav {
+        scroll-behavior: smooth;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
+    }
+    #sidebar nav::-webkit-scrollbar {
+        width: 4px;
+    }
+    #sidebar nav::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    #sidebar nav::-webkit-scrollbar-thumb {
+        background: rgba(148, 163, 184, 0.3);
+        border-radius: 4px;
+    }
+    #sidebar nav::-webkit-scrollbar-thumb:hover {
+        background: rgba(148, 163, 184, 0.6);
+    }
+    .dark #sidebar nav::-webkit-scrollbar-thumb {
+        background: rgba(71, 85, 105, 0.5);
+    }
+    .dark #sidebar nav::-webkit-scrollbar-thumb:hover {
+        background: rgba(71, 85, 105, 0.8);
+    }
+    /* Hide scrollbar when not hovering */
+    #sidebar nav:not(:hover)::-webkit-scrollbar-thumb {
+        background: transparent;
+    }
+    
+    /* Smooth Link Transitions */
+    #sidebar a, #sidebar button {
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #sidebar a:active, #sidebar button:active {
+        transform: scale(0.98);
+    }
+    
+    /* Section Collapse Animation */
+    [x-collapse] {
+        overflow: hidden;
+    }
+</style>
+<aside id="sidebar" x-data="{ ready: false }" x-init="setTimeout(() => ready = true, 100)" 
+       class="sidebar-transition fixed md:relative z-40 w-64 bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 flex flex-col h-[calc(100vh-64px)] md:h-full top-16 md:top-0 -translate-x-full md:translate-x-0 shadow-xl md:shadow-none whitespace-nowrap overflow-x-hidden"
+       :class="{ 'opacity-0': !ready, 'opacity-100': ready }">
     
     <!-- Top: Logo (Desktop Only) -->
-    <div class="hidden md:flex h-16 items-center px-6 border-b border-slate-100 dark:border-slate-800 min-w-[16rem]">
+    <div class="hidden md:flex h-16 items-center px-6 border-b border-slate-100 dark:border-slate-800 min-w-[16rem] shrink-0">
         <a href="index.php" class="flex items-center gap-2">
             <!-- Light Theme Logo -->
             <img src="../assets/images/logo-light.png" alt="Mipaymaster" class="h-10 w-auto object-contain block dark:hidden">
@@ -70,9 +116,8 @@ function isActive($page_name, $current_page) {
     </div>
     
     <!-- Company Switcher -->
-    <!-- Company Switcher -->
     <!-- Company Display (No Switcher) -->
-    <div class="p-4 border-b border-slate-100 dark:border-slate-800 min-w-[16rem]">
+    <div class="p-4 border-b border-slate-100 dark:border-slate-800 min-w-[16rem] shrink-0">
         <div class="w-full flex items-center gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
             <?php if (!empty($company_logo_url) && file_exists(__DIR__ . '/../uploads/logos/' . $company_logo_url)): ?>
                 <div class="w-8 h-8 rounded bg-white flex items-center justify-center overflow-hidden border border-slate-200">
@@ -90,9 +135,7 @@ function isActive($page_name, $current_page) {
     </div>
 
     <!-- Navigation Menu -->
-    <!-- DEBUG: Current page = <?php echo htmlspecialchars($current ?? 'NOT_SET'); ?> -->
-    <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1 min-w-[16rem] scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-700 overscroll-contain"
-         @scroll.debounce.200ms="saveScroll"
+    <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1 min-w-[16rem] overscroll-contain"
          x-data="{
             hrOpen: false,
             payrollOpen: false,
@@ -106,11 +149,15 @@ function isActive($page_name, $current_page) {
                 this.financeOpen = this.restore('financeOpen', <?php echo in_array($current, ['wallet', 'tax_calculator', 'billing']) ? 'true' : 'false'; ?>);
                 this.adminOpen = this.restore('adminOpen', <?php echo in_array($current, ['users', 'settings', 'audit', 'support', 'reports']) ? 'true' : 'false'; ?>);
 
-                // Restore Scroll
-                const savedScroll = localStorage.getItem('sidebar_scroll');
-                if (savedScroll) {
-                    this.$el.scrollTop = parseInt(savedScroll);
-                }
+                // Scroll active item into view after a short delay
+                this.$nextTick(() => {
+                    const activeLink = this.$el.querySelector('a.text-brand-600, a.text-brand-400');
+                    if (activeLink) {
+                        setTimeout(() => {
+                            activeLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }, 200);
+                    }
+                });
 
                 // Watchers for sections
                 this.$watch('hrOpen', val => this.save('hrOpen', val));
@@ -124,9 +171,6 @@ function isActive($page_name, $current_page) {
             },
             save(key, val) {
                 localStorage.setItem('sidebar_' + key, val);
-            },
-            saveScroll() {
-                localStorage.setItem('sidebar_scroll', this.$el.scrollTop);
             }
          }">
 

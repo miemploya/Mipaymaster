@@ -97,20 +97,44 @@ if (!$ps) die("Payslip not found or access denied.");
         </div>
 
         <?php 
-        $breakdown = json_decode($ps['salary_breakdown'] ?? '{}', true);
+        // Fetch snapshot data for this payroll entry
+        $stmt_snap = $pdo->prepare("SELECT snapshot_json FROM payroll_snapshots WHERE payroll_entry_id = ?");
+        $stmt_snap->execute([$ps['id']]);
+        $snapshot_row = $stmt_snap->fetch();
+        $snapshot = $snapshot_row ? json_decode($snapshot_row['snapshot_json'], true) : [];
         
-        // Extract Earnings
-        $basic = $breakdown['basic'] ?? 0;
-        $housing = $breakdown['housing'] ?? 0;
-        $transport = $breakdown['transport'] ?? 0;
-        $other = $breakdown['other_allowance'] ?? 0;
+        // Extract breakdown from snapshot
+        $breakdown = $snapshot['breakdown'] ?? [];
+        $statutory = $snapshot['statutory'] ?? [];
+        
+        // Extract Earnings from breakdown
+        $basic = $breakdown['Basic Salary'] ?? 0;
+        $housing = $breakdown['Housing Allowance'] ?? 0;
+        $transport = $breakdown['Transport Allowance'] ?? 0;
+        $other = 0;
+        foreach ($breakdown as $key => $val) {
+            if (!in_array($key, ['Basic Salary', 'Housing Allowance', 'Transport Allowance'])) {
+                $other += $val;
+            }
+        }
         $overtime = $breakdown['overtime'] ?? 0;
         
-        // Extract Deductions
-        $paye = $breakdown['paye'] ?? 0;
-        $pension = $breakdown['pension'] ?? 0;
-        $nhis = $breakdown['nhis'] ?? 0;
-        $loan = $breakdown['loan'] ?? 0; // Using 'loan' from breakdown if available, else 0
+        // Extract Deductions from statutory
+        $paye = $statutory['paye'] ?? 0;
+        $pension = $statutory['pension_employee'] ?? 0;
+        $nhis = $statutory['nhis'] ?? 0;
+        $nhf = $statutory['nhf'] ?? 0;
+        
+        // Loan deductions
+        $loans = $snapshot['loans'] ?? [];
+        $total_loan = 0;
+        foreach ($loans as $loan) {
+            $total_loan += floatval($loan['amount'] ?? 0);
+        }
+        
+        // Attendance/Lateness deductions
+        $attendance = $snapshot['attendance'] ?? [];
+        $lateness_deduction = floatval($attendance['deduction'] ?? 0);
         ?>
 
         <!-- Tables -->
@@ -168,10 +192,22 @@ if (!$ps) die("Payslip not found or access denied.");
                         <td class="text-right">₦<?php echo number_format($nhis, 2); ?></td>
                     </tr>
                     <?php endif; ?>
-                    <?php if($loan > 0): ?>
+                    <?php if($nhf > 0): ?>
+                    <tr>
+                        <td>NHF</td>
+                        <td class="text-right">₦<?php echo number_format($nhf, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php if($total_loan > 0): ?>
                     <tr>
                         <td>Loan Repayment</td>
-                        <td class="text-right">₦<?php echo number_format($loan, 2); ?></td>
+                        <td class="text-right">₦<?php echo number_format($total_loan, 2); ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php if($lateness_deduction > 0): ?>
+                    <tr style="background: #fef3c7;">
+                        <td>Lateness Deduction</td>
+                        <td class="text-right" style="color: #d97706;">₦<?php echo number_format($lateness_deduction, 2); ?></td>
                     </tr>
                     <?php endif; ?>
                     <tr class="total-row" style="background: #fff1f2;">

@@ -19,7 +19,7 @@ $records_json = '[]';
 try {
     // Fetch logs joined with employee data
     $stmt = $pdo->prepare("
-        SELECT al.*, e.first_name, e.last_name, e.employee_id as emp_code, d.name as dept_name 
+        SELECT al.*, e.first_name, e.last_name, e.payroll_id as emp_code, d.name as dept_name 
         FROM attendance_logs al 
         JOIN employees e ON al.employee_id = e.id 
         LEFT JOIN departments d ON e.department_id = d.id 
@@ -65,6 +65,24 @@ try {
 } catch (Exception $e) {
     error_log("Attendance Fetch Error: " . $e->getMessage());
 }
+
+// 3. Get All Active Employees for Manual Entry Dropdown
+$employees_for_dropdown = [];
+try {
+    $stmt_emp = $pdo->prepare("
+        SELECT e.id, e.first_name, e.last_name, e.payroll_id, d.name as dept_name 
+        FROM employees e 
+        LEFT JOIN departments d ON e.department_id = d.id 
+        WHERE e.company_id = ? 
+        AND LOWER(e.employment_status) IN ('active', 'full time', 'probation', 'contract')
+        ORDER BY e.first_name ASC
+    ");
+    $stmt_emp->execute([$company_id]);
+    $employees_for_dropdown = $stmt_emp->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    error_log("Employee Fetch Error: " . $e->getMessage());
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -122,6 +140,11 @@ try {
                 dailyRecords: <?php echo $records_json; ?>,
                 policyMethod: '<?php echo $attendance_method; ?>',
 
+                // FLAGGED RECORDS
+                flaggedCount: 0,
+                flaggedRecords: [],
+                flaggedLoading: false,
+
                 devices: [
                     { name: 'Main Entrance', type: 'Fingerprint', location: 'Reception', ip: '192.168.1.20', status: 'Online', lastSync: '2 mins ago' },
                     { name: 'Factory Gate', type: 'Face ID', location: 'Warehouse', ip: '192.168.1.21', status: 'Offline', lastSync: '4 hours ago' },
@@ -151,11 +174,80 @@ try {
                             if(typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
                         }, 50)
                     });
+                    // Load flagged count on init
+                    this.loadFlaggedCount();
                 },
 
                 get filteredRecords() {
                     if (this.statusFilter === 'All') return this.dailyRecords;
                     return this.dailyRecords.filter(r => r.status === this.statusFilter);
+                },
+
+                // FLAGGED RECORDS METHODS
+                async loadFlaggedCount() {
+                    try {
+                        const res = await fetch('ajax/attendance_flags.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_flagged' })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.flaggedCount = data.data.length;
+                        }
+                    } catch (e) { console.error('Failed to load flagged count:', e); }
+                },
+
+                async loadFlagged() {
+                    this.flaggedLoading = true;
+                    try {
+                        const res = await fetch('ajax/attendance_flags.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_flagged' })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.flaggedRecords = data.data;
+                            this.flaggedCount = data.data.length;
+                        }
+                    } catch (e) { console.error('Failed to load flagged records:', e); alert('Error loading flagged records'); }
+                    this.flaggedLoading = false;
+                    setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
+                },
+
+                async clearFlag(logId) {
+                    if (!confirm('Clear this flag? The record will be marked as reviewed.')) return;
+                    try {
+                        const res = await fetch('ajax/attendance_flags.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'clear_flag', log_id: logId })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.loadFlagged(); // Refresh
+                        } else {
+                            alert(data.message || 'Failed to clear flag');
+                        }
+                    } catch (e) { console.error('Failed to clear flag:', e); alert('Error clearing flag'); }
+                },
+
+                async markAbsent(dateStr) {
+                    const date = dateStr || prompt('Enter date (YYYY-MM-DD):', new Date(Date.now() - 86400000).toISOString().slice(0,10));
+                    if (!date) return;
+                    if (!confirm(`Mark all non-present employees as Absent for ${date}?`)) return;
+                    
+                    try {
+                        const res = await fetch('ajax/attendance_flags.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'mark_absent', date: date })
+                        });
+                        const data = await res.json();
+                        alert(data.message || 'Done');
+                        if (data.status) this.loadFlagged(); // Refresh
+                    } catch (e) { console.error('Failed to mark absent:', e); alert('Error marking absences'); }
                 }
             }
         }
@@ -172,7 +264,7 @@ try {
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
         .dark ::-webkit-scrollbar-thumb { background: #334155; }
         
-        /* [x-cloak] { display: none !important; } */
+        [x-cloak] { display: none !important; }
         
         /* Sidebar Transitions */
         .sidebar-transition { transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out, transform 0.3s ease-in-out; }
@@ -207,8 +299,8 @@ try {
         <?php $current_page = 'attendance'; include '../includes/dashboard_sidebar.php'; ?>
 
         <!-- MAIN CONTENT -->
-        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) -->
-        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800">
+        <!-- NOTIFICATIONS PANEL (SLIDE-OVER) - Starts hidden -->
+        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
             <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
                 <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
@@ -272,15 +364,21 @@ try {
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
                         <i data-lucide="fingerprint" class="w-4 h-4"></i> Biometrics
                     </button>
-                    <button @click="currentTab = 'rules'" 
-                        :class="currentTab === 'rules' ? 'border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400 bg-brand-50/10' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:border-slate-300'" 
-                        class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
-                        <i data-lucide="settings-2" class="w-4 h-4"></i> Sync Rules
-                    </button>
+                    <a href="company.php?tab=attendance" 
+                        class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-brand-400 hover:border-brand-300 transition-all duration-200 whitespace-nowrap cursor-pointer">
+                        <i data-lucide="settings" class="w-4 h-4"></i> Policy Settings
+                    </a>
                     <button @click="currentTab = 'logs'" 
                         :class="currentTab === 'logs' ? 'border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400 bg-brand-50/10' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:border-slate-300'" 
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
                         <i data-lucide="file-clock" class="w-4 h-4"></i> Audit Logs
+                    </button>
+                    <button @click="currentTab = 'flagged'; loadFlagged()" 
+                        :class="currentTab === 'flagged' ? 'border-red-600 text-red-600 dark:text-red-400 dark:border-red-400 bg-red-50/10' : 'border-transparent text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:border-red-300'" 
+                        class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
+                        <i data-lucide="alert-triangle" class="w-4 h-4"></i> 
+                        <span>Flagged</span>
+                        <span x-show="flaggedCount > 0" class="ml-1 px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full" x-text="flaggedCount"></span>
                     </button>
                 </div>
 
@@ -555,42 +653,7 @@ try {
                     </div>
                 </div>
 
-                <!-- TAB 4: SYNC RULES -->
-                <div x-show="currentTab === 'rules'" x-cloak x-transition.opacity>
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        <div class="bg-white dark:bg-slate-950 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 p-6">
-                            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Sync Behavior</h3>
-                            <div class="space-y-4">
-                                <label class="flex items-center justify-between p-3 border rounded-lg border-slate-200 dark:border-slate-700">
-                                    <span class="text-sm text-slate-700 dark:text-slate-300">Auto-create attendance records</span>
-                                    <input type="checkbox" checked class="w-5 h-5 text-brand-600 rounded">
-                                </label>
-                                <label class="flex items-center justify-between p-3 border rounded-lg border-slate-200 dark:border-slate-700">
-                                    <span class="text-sm text-slate-700 dark:text-slate-300">Ignore duplicate scans (within 5m)</span>
-                                    <input type="checkbox" checked class="w-5 h-5 text-brand-600 rounded">
-                                </label>
-                                <div>
-                                    <label class="form-label">Grace Period (Minutes)</label>
-                                    <input type="number" value="15" class="form-input w-24">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6">
-                            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="lock" class="w-4 h-4"></i> Payroll Impact (Read-Only)</h3>
-                            <p class="text-xs text-slate-500 mb-4">These settings are inherited from the main Payroll Behaviour configuration.</p>
-                            <div class="space-y-2">
-                                <div class="flex justify-between items-center p-2 bg-white dark:bg-slate-950 rounded border border-slate-200 dark:border-slate-800">
-                                    <span class="text-sm">Lateness Deduction</span>
-                                    <span class="text-xs font-bold text-green-600">ENABLED</span>
-                                </div>
-                                <div class="flex justify-between items-center p-2 bg-white dark:bg-slate-950 rounded border border-slate-200 dark:border-slate-800">
-                                    <span class="text-sm">Overtime Pay</span>
-                                    <span class="text-xs font-bold text-green-600">ENABLED</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+
 
                 <!-- TAB 5: AUDIT LOGS (NEW TABLE) -->
                 <div x-show="currentTab === 'logs'" x-cloak x-transition.opacity>
@@ -641,23 +704,94 @@ try {
                 <button @click="showManualModal = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i data-lucide="x" class="w-6 h-6"></i></button>
             </div>
             
-            <div class="p-6 space-y-5">
-                <div>
+            <script>
+                window.attendanceEmployees = <?php echo json_encode($employees_for_dropdown); ?>;
+            </script>
+            <div class="p-6 space-y-5" x-data="{
+                form: {
+                    employee_id: '',
+                    date: '<?php echo date('Y-m-d'); ?>',
+                    status: 'Present',
+                    check_in: '',
+                    check_out: '',
+                    reason: '',
+                    custom_deduction: ''
+                },
+                search: '', 
+                open: false, 
+                selectedName: '',
+                employees: window.attendanceEmployees,
+                get filteredEmployees() {
+                    if (this.search === '') return this.employees;
+                    return this.employees.filter(emp => {
+                        const fullName = (emp.first_name + ' ' + emp.last_name).toLowerCase();
+                        return fullName.includes(this.search.toLowerCase()) || 
+                               (emp.payroll_id && emp.payroll_id.toLowerCase().includes(this.search.toLowerCase()));
+                    });
+                },
+                select(emp) {
+                    this.form.employee_id = emp.id;
+                    this.selectedName = emp.first_name + ' ' + emp.last_name + ' (' + (emp.payroll_id || 'N/A') + ')';
+                    this.open = false;
+                    this.search = '';
+                },
+                save() {
+                    if(!this.form.employee_id) { alert('Please select an employee'); return; }
+                    if(!this.form.date) { alert('Please select a date'); return; }
+                    if(!this.form.reason) { alert('Please enter a reason'); return; }
+                    
+                    fetch('ajax/save_manual_attendance.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.form)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if(data.status) {
+                            alert('Record saved successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    })
+                    .catch(e => alert('Network error'));
+                }
+            }">
+                <div class="relative" @click.outside="open = false">
                     <label class="form-label">Employee</label>
-                    <select class="form-input bg-slate-50"><option>Select Employee...</option></select>
+                    
+                    <div @click="open = !open" class="form-input bg-slate-50 cursor-pointer flex justify-between items-center">
+                        <span x-text="selectedName ? selectedName : 'Select Employee...'" :class="{'text-slate-400': !selectedName, 'text-slate-700 dark:text-white': selectedName}"></span>
+                        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
+                    </div>
+                    
+                    <div x-show="open" x-cloak class="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        <div class="p-2 sticky top-0 bg-white dark:bg-slate-800 border-b border-slate-100 dark:border-slate-700">
+                            <input type="text" x-model="search" placeholder="Search by name or ID..." class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-900 focus:outline-none focus:border-brand-500 dark:text-white" @click.stop>
+                        </div>
+                        <ul>
+                            <template x-for="emp in filteredEmployees" :key="emp.id">
+                                <li @click="select(emp)" class="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer text-sm text-slate-700 dark:text-gray-300">
+                                    <span x-text="emp.first_name + ' ' + emp.last_name" class="font-medium"></span>
+                                    <span class="text-xs text-slate-400 ml-2" x-text="'(' + (emp.payroll_id || 'N/A') + ')'"></span>
+                                    <span x-show="emp.dept_name" class="block text-xs text-slate-400" x-text="emp.dept_name"></span>
+                                </li>
+                            </template>
+                            <li x-show="filteredEmployees.length === 0" class="px-4 py-2 text-sm text-slate-400 text-center">No employees found</li>
+                        </ul>
+                    </div>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-5">
-                    <div><label class="form-label">Date</label><input type="date" class="form-input"></div>
+                    <div><label class="form-label">Date</label><input type="date" class="form-input" x-model="form.date"></div>
                     <div>
-                        <!-- UPDATED MODAL STATUS FILTER (ADDED LEAVE/SUSPENDED) -->
                         <label class="form-label">Attendance Status</label>
-                        <select class="form-input">
-                            <option>Present</option>
-                            <option>Late</option>
-                            <option>Absent</option>
-                            <option>On Leave</option>
-                            <option>Suspended</option>
+                        <select class="form-input" x-model="form.status">
+                            <option value="Present">Present</option>
+                            <option value="Late">Late</option>
+                            <option value="Absent">Absent</option>
+                            <option value="On Leave">On Leave</option>
+                            <option value="Suspended">Suspended</option>
                         </select>
                     </div>
                 </div>
@@ -665,21 +799,33 @@ try {
                 <div class="grid grid-cols-2 gap-5 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-700/50">
                     <div>
                         <label class="form-label flex items-center gap-2"><i data-lucide="log-in" class="w-3 h-3 text-green-500"></i> Check In</label>
-                        <input type="time" class="form-input">
+                        <input type="time" class="form-input" x-model="form.check_in">
                     </div>
                     <div>
                         <label class="form-label flex items-center gap-2"><i data-lucide="log-out" class="w-3 h-3 text-red-500"></i> Check Out</label>
-                        <input type="time" class="form-input">
+                        <input type="time" class="form-input" x-model="form.check_out">
                     </div>
+                </div>
+                
+                <!-- Lateness Deduction Field (shown when Late) -->
+                <div x-show="form.status === 'Late'" x-cloak class="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                    <label class="form-label flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                        <i data-lucide="alert-triangle" class="w-3 h-3"></i> Lateness Deduction (Optional)
+                    </label>
+                    <div class="flex items-center gap-3">
+                        <span class="text-lg font-bold text-amber-600">₦</span>
+                        <input type="number" step="0.01" min="0" class="form-input flex-1" x-model="form.custom_deduction" placeholder="Leave blank for auto-calculation">
+                    </div>
+                    <p class="text-xs text-amber-600 dark:text-amber-400 mt-1">If blank, deduction is calculated from policy settings.</p>
                 </div>
                 
                 <div>
                     <label class="form-label">Reason for Adjustment <span class="text-red-500">*</span></label>
-                    <textarea class="form-input" rows="2" placeholder="Required for audit trail..."></textarea>
+                    <textarea class="form-input" rows="2" placeholder="Required for audit trail..." x-model="form.reason"></textarea>
                 </div>
                 
                 <div class="pt-2">
-                    <button class="w-full py-3 bg-brand-600 text-white font-bold rounded-xl hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/30">Save Record</button>
+                    <button @click="save()" class="w-full py-3 bg-brand-600 text-white font-bold rounded-xl hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/30">Save Record</button>
                 </div>
             </div>
         </div>
