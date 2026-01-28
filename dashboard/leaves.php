@@ -47,11 +47,21 @@ $company_id = $_SESSION['company_id'];
 
         <main class="flex-1 overflow-y-auto p-6 lg:p-8">
             <!-- Tabs -->
-            <div class="flex gap-4 border-b border-slate-200 dark:border-slate-800 mb-6">
-                <button @click="tab = 'pending'; fetchLeaves()" :class="tab === 'pending' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Pending Requests</button>
-                <button @click="tab = 'approved'; fetchLeaves()" :class="tab === 'approved' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Approved</button>
-                <button @click="tab = 'rejected'; fetchLeaves()" :class="tab === 'rejected' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Rejected</button>
-                <button @click="tab = 'history'; fetchLeaves()" :class="tab === 'history' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">All History</button>
+            <div class="flex justify-between items-center border-b border-slate-200 dark:border-slate-800 mb-6">
+                <div class="flex gap-4">
+                    <button @click="tab = 'pending'; fetchLeaves()" :class="tab === 'pending' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Pending Requests</button>
+                    <button @click="tab = 'approved'; fetchLeaves()" :class="tab === 'approved' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Approved</button>
+                    <button @click="tab = 'rejected'; fetchLeaves()" :class="tab === 'rejected' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">Rejected</button>
+                    <button @click="tab = 'history'; fetchLeaves()" :class="tab === 'history' ? 'border-brand-600 text-brand-600 dark:text-brand-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'" class="px-4 py-2 text-sm font-bold border-b-2 transition-colors">All History</button>
+                </div>
+                <div class="flex gap-2 mb-2">
+                    <button @click="exportCSV()" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-bold flex items-center gap-1">
+                        <i data-lucide="download" class="w-3 h-3"></i> Export CSV
+                    </button>
+                    <button @click="printLeaves()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1">
+                        <i data-lucide="printer" class="w-3 h-3"></i> Print
+                    </button>
+                </div>
             </div>
 
             <!-- Table -->
@@ -181,6 +191,99 @@ $company_id = $_SESSION['company_id'];
                         alert(data.message);
                         if(data.status) this.fetchLeaves();
                     } catch(e) { alert('Error processing request.'); }
+                },
+
+                exportCSV() {
+                    if (this.leaves.length === 0) {
+                        alert('No data to export.');
+                        return;
+                    }
+                    
+                    const headers = ['Employee', 'Email', 'Leave Type', 'Start Date', 'End Date', 'Duration (Days)', 'Reason', 'Status'];
+                    const rows = this.leaves.map(l => [
+                        `${l.first_name} ${l.last_name}`,
+                        l.email,
+                        l.leave_type,
+                        l.start_date,
+                        l.end_date,
+                        this.calcDuration(l.start_date, l.end_date),
+                        `"${(l.reason || '').replace(/"/g, '""')}"`,
+                        l.status
+                    ]);
+                    
+                    let csv = headers.join(',') + '\n';
+                    rows.forEach(r => csv += r.join(',') + '\n');
+                    
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `leave_report_${this.tab}_${new Date().toISOString().split('T')[0]}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                },
+
+                printLeaves() {
+                    if (this.leaves.length === 0) {
+                        alert('No data to print.');
+                        return;
+                    }
+                    
+                    const tabTitle = this.tab.charAt(0).toUpperCase() + this.tab.slice(1);
+                    let html = `
+                        <html>
+                        <head>
+                            <title>Leave Report - ${tabTitle}</title>
+                            <style>
+                                body { font-family: Arial, sans-serif; padding: 20px; }
+                                h1 { color: #333; font-size: 24px; margin-bottom: 5px; }
+                                h3 { color: #666; font-size: 14px; margin-bottom: 20px; }
+                                table { width: 100%; border-collapse: collapse; font-size: 12px; }
+                                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                                th { background: #f5f5f5; font-weight: bold; }
+                                .status-pending { color: #b45309; }
+                                .status-approved { color: #15803d; }
+                                .status-rejected { color: #dc2626; }
+                            </style>
+                        </head>
+                        <body>
+                            <h1>Leave Report - ${tabTitle}</h1>
+                            <h3>Generated: ${new Date().toLocaleString()}</h3>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Employee</th>
+                                        <th>Leave Type</th>
+                                        <th>Start Date</th>
+                                        <th>End Date</th>
+                                        <th>Duration</th>
+                                        <th>Reason</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    this.leaves.forEach(l => {
+                        html += `
+                            <tr>
+                                <td>${l.first_name} ${l.last_name}</td>
+                                <td>${l.leave_type}</td>
+                                <td>${this.formatDate(l.start_date)}</td>
+                                <td>${this.formatDate(l.end_date)}</td>
+                                <td>${this.calcDuration(l.start_date, l.end_date)} days</td>
+                                <td>${l.reason || '-'}</td>
+                                <td class="status-${l.status}">${l.status}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += `</tbody></table></body></html>`;
+                    
+                    const printWindow = window.open('', '_blank');
+                    printWindow.document.write(html);
+                    printWindow.document.close();
+                    printWindow.print();
                 }
             }
         }

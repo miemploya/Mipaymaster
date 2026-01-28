@@ -314,6 +314,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $taxable = isset($_POST['item_taxable']) ? 1 : 0;
         $pensionable = isset($_POST['item_pensionable']) ? 1 : 0;
         
+        // NEW: Scope fields for hybrid assignment
+        $scope = $_POST['item_scope'] ?? 'company';
+        $category_id = !empty($_POST['item_category_id']) ? (int)$_POST['item_category_id'] : null;
+        $department_id = !empty($_POST['item_department_id']) ? (int)$_POST['item_department_id'] : null;
+        
         $table = ($type === 'deduction') ? 'payroll_deduction_types' : 'payroll_bonus_types';
 
         if (empty($name)) {
@@ -321,12 +326,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
              try {
                 if ($item_id) {
-                    $stmt = $pdo->prepare("UPDATE $table SET name=?, calculation_mode=?, amount=?, percentage=?, percentage_base=?, is_taxable=?, is_pensionable=?, is_active=? WHERE id=? AND company_id=?");
-                    $stmt->execute([$name, $method, $amount, $percentage, $base, $taxable, $pensionable, $active, $item_id, $company_id]);
+                    $stmt = $pdo->prepare("UPDATE $table SET name=?, calculation_mode=?, amount=?, percentage=?, percentage_base=?, is_taxable=?, is_pensionable=?, is_active=?, scope=?, category_id=?, department_id=? WHERE id=? AND company_id=?");
+                    $stmt->execute([$name, $method, $amount, $percentage, $base, $taxable, $pensionable, $active, $scope, $category_id, $department_id, $item_id, $company_id]);
                     $_SESSION['flash_success'] = "Item updated.";
                 } else {
-                    $stmt = $pdo->prepare("INSERT INTO $table (company_id, name, calculation_mode, amount, percentage, percentage_base, is_taxable, is_pensionable, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->execute([$company_id, $name, $method, $amount, $percentage, $base, $taxable, $pensionable, $active]);
+                    $stmt = $pdo->prepare("INSERT INTO $table (company_id, name, calculation_mode, amount, percentage, percentage_base, is_taxable, is_pensionable, is_active, scope, category_id, department_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$company_id, $name, $method, $amount, $percentage, $base, $taxable, $pensionable, $active, $scope, $category_id, $department_id]);
                     $_SESSION['flash_success'] = "Item created.";
                     log_audit($company_id, $_SESSION['user_id'], 'CREATE_PAYROLL_ITEM', "Created payroll item: $name");
                 }
@@ -1232,7 +1237,7 @@ try {
                 
                 // FORMS
                 deptForm: { id: null, name: '', code: '', active: true },
-                itemForm: { id: null, name: '', type: 'bonus', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, recurring: true, active: true, custom: 0 },
+                itemForm: { id: null, name: '', type: 'bonus', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, recurring: true, active: true, custom: 0, scope: 'company', category_id: null, department_id: null },
                 catForm: { id: null, title: '', amount: 0, basic: 40, housing: 30, transport: 20, other: 10 },
                 newComponent: { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: <?php echo $statutory['enable_paye'] ? 'true' : 'false'; ?>, pensionable: <?php echo $statutory['enable_pension'] ? 'true' : 'false'; ?>, custom: 0 },
                 
@@ -1480,7 +1485,7 @@ try {
                         this.itemSearch = item.name;
                     } else {
                         this.itemSearch = '';
-                        this.itemForm = { id: null, name: '', type: type, method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, recurring: true, active: true, custom: 0 };
+                        this.itemForm = { id: null, name: '', type: type, method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, recurring: true, active: true, custom: 0, scope: 'company', category_id: null, department_id: null };
                     }
                 },
                 selectMasterItem(name) {
@@ -1502,6 +1507,10 @@ try {
                          html += `<input type='hidden' name='item_${f}' value='${this.itemForm[f]}'>`;
                     });
                     html += `<input type='hidden' name='item_custom' value='${this.itemForm.custom ? 1 : 0}'>`;
+                    // NEW: Scope fields
+                    html += `<input type='hidden' name='item_scope' value='${this.itemForm.scope}'>`;
+                    if(this.itemForm.category_id) html += `<input type='hidden' name='item_category_id' value='${this.itemForm.category_id}'>`;
+                    if(this.itemForm.department_id) html += `<input type='hidden' name='item_department_id' value='${this.itemForm.department_id}'>`;
                     ['taxable','pensionable','recurring','active'].forEach(f => {
                          if(this.itemForm[f]) html += `<input type='hidden' name='item_${f}' value='1'>`;
                     });
@@ -2211,6 +2220,18 @@ try {
 
                     <!-- TAB: PAYROLL ITEMS (NEW) -->
                     <div x-show="currentTab === 'items'" x-cloak>
+                        <!-- Recurring Notice Banner -->
+                        <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-6 flex items-start gap-3">
+                            <i data-lucide="repeat" class="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5"></i>
+                            <div>
+                                <p class="text-sm font-bold text-blue-800 dark:text-blue-300">Recurring Items</p>
+                                <p class="text-xs text-blue-700 dark:text-blue-400 mt-1">
+                                    Items configured here will apply <strong>automatically to every payroll run</strong>. 
+                                    For one-time bonuses or deductions, use the <strong>Payroll Adjustments</strong> feature when running payroll.
+                                </p>
+                            </div>
+                        </div>
+                        
                         <!-- Sub Tabs -->
                         <div class="flex items-center gap-4 mb-6">
                             <button @click="itemTab = 'bonus'" :class="itemTab === 'bonus' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'" class="px-4 py-2 rounded-lg text-sm font-bold transition-colors">Bonuses</button>
@@ -2369,6 +2390,59 @@ try {
                                                 <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Recurring</span>
                                                 <input type="checkbox" x-model="itemForm.recurring" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
                                             </label>
+                                        </div>
+                                        
+                                        <!-- Scope Selection (NEW) -->
+                                        <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                                            <label class="form-label">Assignment Scope</label>
+                                            <div class="grid grid-cols-2 gap-2">
+                                                <label class="flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors text-sm" :class="itemForm.scope === 'company' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-800'">
+                                                    <input type="radio" x-model="itemForm.scope" value="company" @change="itemForm.category_id = null; itemForm.department_id = null;" class="text-brand-600">
+                                                    <span class="font-medium">Company-wide</span>
+                                                </label>
+                                                <label class="flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors text-sm" :class="itemForm.scope === 'category' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-800'">
+                                                    <input type="radio" x-model="itemForm.scope" value="category" @change="itemForm.department_id = null;" class="text-brand-600">
+                                                    <span class="font-medium">Per Category</span>
+                                                </label>
+                                                <label class="flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors text-sm" :class="itemForm.scope === 'department' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-800'">
+                                                    <input type="radio" x-model="itemForm.scope" value="department" @change="itemForm.category_id = null;" class="text-brand-600">
+                                                    <span class="font-medium">Per Department</span>
+                                                </label>
+                                                <label class="flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors text-sm" :class="itemForm.scope === 'employee' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-800'">
+                                                    <input type="radio" x-model="itemForm.scope" value="employee" @change="itemForm.category_id = null; itemForm.department_id = null;" class="text-brand-600">
+                                                    <span class="font-medium">Per Employee</span>
+                                                </label>
+                                            </div>
+                                            
+                                            <!-- Category Selector -->
+                                            <div x-show="itemForm.scope === 'category'" x-transition>
+                                                <label class="form-label">Select Category</label>
+                                                <select x-model="itemForm.category_id" class="form-input">
+                                                    <option value="">-- Select --</option>
+                                                    <template x-for="cat in categories" :key="cat.id">
+                                                        <option :value="cat.id" x-text="cat.title"></option>
+                                                    </template>
+                                                </select>
+                                            </div>
+                                            
+                                            <!-- Department Selector -->
+                                            <div x-show="itemForm.scope === 'department'" x-transition>
+                                                <label class="form-label">Select Department</label>
+                                                <select x-model="itemForm.department_id" class="form-input">
+                                                    <option value="">-- Select --</option>
+                                                    <template x-for="dept in departments" :key="dept.id">
+                                                        <option :value="dept.id" x-text="dept.name"></option>
+                                                    </template>
+                                                </select>
+                                            </div>
+                                            
+                                            <!-- Employee Scope Notice -->
+                                            <div x-show="itemForm.scope === 'employee'" x-transition class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-700">
+                                                <p class="text-xs text-amber-700 dark:text-amber-300">
+                                                    <i data-lucide="info" class="w-3 h-3 inline mr-1"></i>
+                                                    Employee-specific assignment is done after saving. Edit employees to assign this item.
+                                                </p>
+                                            </div>
                                         </div>
                                         
                                         <!-- Live Preview Box -->

@@ -245,7 +245,7 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     }
 
     // 2. Fetch Active Employees & Gross
-    $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, sc.base_gross_amount 
+    $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, e.department_id, sc.base_gross_amount 
                            FROM employees e
                            JOIN salary_categories sc ON e.salary_category_id = sc.id
                            WHERE e.company_id = ? 
@@ -455,7 +455,110 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $net_pay -= $total_loan_amount;
             // ---------------------------
 
-            $total_gross_run += $adjusted_gross;
+            // --- CUSTOM BONUS/DEDUCTION LOGIC ---
+            $custom_bonuses = [];
+            $custom_deductions = [];
+            $total_bonus_amount = 0;
+            $total_custom_deduction_amount = 0;
+
+            // Fetch applicable bonuses (company-wide, category, department, or employee-specific)
+            $stmt_bonus = $pdo->prepare("
+                SELECT bt.* FROM payroll_bonus_types bt
+                WHERE bt.company_id = ? AND bt.is_active = 1
+                AND (
+                    bt.scope = 'company' OR
+                    (bt.scope = 'category' AND bt.category_id = ?) OR
+                    (bt.scope = 'department' AND bt.department_id = ?) OR
+                    (bt.scope = 'employee' AND bt.id IN (
+                        SELECT bonus_type_id FROM employee_bonus_assignments 
+                        WHERE employee_id = ? AND is_active = 1
+                    ))
+                )
+            ");
+            $stmt_bonus->execute([$company_id, $emp['category_id'], $emp['department_id'], $emp['id']]);
+            
+            while ($bonus = $stmt_bonus->fetch(PDO::FETCH_ASSOC)) {
+                $amount = 0;
+                if ($bonus['calculation_mode'] === 'fixed') {
+                    $amount = floatval($bonus['amount']);
+                } else { // percentage
+                    $base = ($bonus['percentage_base'] === 'basic') ? $basic : $adjusted_gross;
+                    $amount = $base * (floatval($bonus['percentage']) / 100);
+                }
+                if ($amount > 0) {
+                    $total_bonus_amount += $amount;
+                    $custom_bonuses[] = ['name' => $bonus['name'], 'amount' => $amount, 'scope' => $bonus['scope']];
+                }
+            }
+
+            // Fetch applicable deductions (company-wide, category, department, or employee-specific)
+            $stmt_ded = $pdo->prepare("
+                SELECT dt.* FROM payroll_deduction_types dt
+                WHERE dt.company_id = ? AND dt.is_active = 1
+                AND (
+                    dt.scope = 'company' OR
+                    (dt.scope = 'category' AND dt.category_id = ?) OR
+                    (dt.scope = 'department' AND dt.department_id = ?) OR
+                    (dt.scope = 'employee' AND dt.id IN (
+                        SELECT deduction_type_id FROM employee_deduction_assignments 
+                        WHERE employee_id = ? AND is_active = 1
+                    ))
+                )
+            ");
+            $stmt_ded->execute([$company_id, $emp['category_id'], $emp['department_id'], $emp['id']]);
+            
+            while ($ded = $stmt_ded->fetch(PDO::FETCH_ASSOC)) {
+                $amount = 0;
+                if ($ded['calculation_mode'] === 'fixed') {
+                    $amount = floatval($ded['amount']);
+                } else { // percentage
+                    $base = ($ded['percentage_base'] === 'basic') ? $basic : $adjusted_gross;
+                    $amount = $base * (floatval($ded['percentage']) / 100);
+                }
+                if ($amount > 0) {
+                    $total_custom_deduction_amount += $amount;
+                    $custom_deductions[] = ['name' => $ded['name'], 'amount' => $amount, 'scope' => $ded['scope']];
+                }
+            }
+
+            // --- ONE-TIME ADJUSTMENTS (from payroll_adjustments table) ---
+            $onetime_adjustments = [];
+            $onetime_bonus_total = 0;
+            $onetime_deduction_total = 0;
+            
+            $stmt_adj = $pdo->prepare("
+                SELECT * FROM payroll_adjustments 
+                WHERE company_id = ? AND employee_id = ? 
+                AND payroll_month = ? AND payroll_year = ?
+            ");
+            $stmt_adj->execute([$company_id, $emp['id'], $month, $year]);
+            
+            while ($adj = $stmt_adj->fetch(PDO::FETCH_ASSOC)) {
+                $adj_amount = floatval($adj['amount']);
+                if ($adj['type'] === 'bonus') {
+                    $onetime_bonus_total += $adj_amount;
+                } else {
+                    $onetime_deduction_total += $adj_amount;
+                }
+                $onetime_adjustments[] = [
+                    'name' => $adj['name'],
+                    'type' => $adj['type'],
+                    'amount' => $adj_amount,
+                    'notes' => $adj['notes']
+                ];
+            }
+            // ----------------------------------------
+
+            // Apply bonuses, custom deductions, and one-time adjustments to Net Pay
+            $net_pay += $total_bonus_amount + $onetime_bonus_total;
+            $net_pay -= $total_custom_deduction_amount + $onetime_deduction_total;
+            // ----------------------------------------
+
+            // Calculate GROSS WITH BONUSES (for accurate payslip display)
+            // Gross = Adjusted Gross (base salary + increments) + All Bonuses
+            $gross_with_bonuses = $adjusted_gross + $total_bonus_amount + $onetime_bonus_total;
+            
+            $total_gross_run += $gross_with_bonuses;
             $total_net_run += $net_pay;
 
             // Insert Entry
@@ -466,10 +569,11 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             // Let's add it to total_deductions for consistency in simple reports, 
             // BUT we must distinguish in Breakdown.
             // Decision: Add to total_deductions column for integrity check (Gross - Ded = Net).
-            $total_deductions_stored = $total_deductions + $total_loan_amount + $attendance_deduction;
+            // Include custom deductions (bonuses already in gross now)
+            $total_deductions_stored = $total_deductions + $total_loan_amount + $attendance_deduction + $total_custom_deduction_amount + $onetime_deduction_total;
 
             $ins_entry->execute([
-                $run_id, $emp['id'], $adjusted_gross, $total_allowances, $total_deductions_stored, $net_pay
+                $run_id, $emp['id'], $gross_with_bonuses, $total_allowances, $total_deductions_stored, $net_pay
             ]);
             $entry_id = $pdo->lastInsertId();
 
@@ -488,6 +592,9 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                 ],
                 'loans' => $loan_deductions,
                 'attendance' => ['deduction' => $attendance_deduction],
+                'custom_bonuses' => $custom_bonuses,
+                'custom_deductions' => $custom_deductions,
+                'onetime_adjustments' => $onetime_adjustments,
                 'settings_used' => $settings
             ];
             

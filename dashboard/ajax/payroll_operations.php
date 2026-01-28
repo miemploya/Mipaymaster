@@ -83,6 +83,92 @@ try {
             // Extract attendance/lateness deduction
             $lateness_deduction = floatval($snap['attendance']['deduction'] ?? 0);
             
+            // Extract bonuses total (custom_bonuses + onetime_adjustments bonuses)
+            $bonus_total = 0;
+            if (isset($snap['custom_bonuses']) && is_array($snap['custom_bonuses'])) {
+                foreach ($snap['custom_bonuses'] as $bonus_item) {
+                    $bonus_total += floatval($bonus_item['amount'] ?? 0);
+                }
+            }
+            if (isset($snap['onetime_adjustments']) && is_array($snap['onetime_adjustments'])) {
+                foreach ($snap['onetime_adjustments'] as $adj) {
+                    if ($adj['type'] === 'bonus') {
+                        $bonus_total += floatval($adj['amount'] ?? 0);
+                    }
+                }
+            }
+            
+            // Extract custom deductions total (custom_deductions + onetime_adjustments deductions)
+            $custom_ded_total = 0;
+            $deduction_items = [];
+            if (isset($snap['custom_deductions']) && is_array($snap['custom_deductions'])) {
+                foreach ($snap['custom_deductions'] as $ded_item) {
+                    $amt = floatval($ded_item['amount'] ?? 0);
+                    $custom_ded_total += $amt;
+                    if ($amt > 0) {
+                        $deduction_items[] = [
+                            'name' => $ded_item['name'] ?? 'Custom Deduction',
+                            'amount' => $amt
+                        ];
+                    }
+                }
+            }
+            if (isset($snap['onetime_adjustments']) && is_array($snap['onetime_adjustments'])) {
+                foreach ($snap['onetime_adjustments'] as $adj) {
+                    if ($adj['type'] === 'deduction') {
+                        $amt = floatval($adj['amount'] ?? 0);
+                        $custom_ded_total += $amt;
+                        if ($amt > 0) {
+                            $deduction_items[] = [
+                                'name' => $adj['name'] ?? 'One-Time Deduction',
+                                'amount' => $amt
+                            ];
+                        }
+                    }
+                }
+            }
+            
+            // Build bonus items array with names
+            $bonus_items = [];
+            if (isset($snap['custom_bonuses']) && is_array($snap['custom_bonuses'])) {
+                foreach ($snap['custom_bonuses'] as $bonus_item) {
+                    $amt = floatval($bonus_item['amount'] ?? 0);
+                    if ($amt > 0) {
+                        $bonus_items[] = [
+                            'name' => $bonus_item['name'] ?? 'Recurring Bonus',
+                            'amount' => $amt
+                        ];
+                    }
+                }
+            }
+            if (isset($snap['onetime_adjustments']) && is_array($snap['onetime_adjustments'])) {
+                foreach ($snap['onetime_adjustments'] as $adj) {
+                    if ($adj['type'] === 'bonus') {
+                        $amt = floatval($adj['amount'] ?? 0);
+                        if ($amt > 0) {
+                            $bonus_items[] = [
+                                'name' => $adj['name'] ?? 'One-Time Bonus',
+                                'amount' => $amt
+                            ];
+                        }
+                    }
+                }
+            }
+            
+            // Build loan items array with names
+            $loan_items = [];
+            if (isset($snap['loans']) && is_array($snap['loans'])) {
+                foreach ($snap['loans'] as $loan_item) {
+                    $amt = floatval($loan_item['amount'] ?? 0);
+                    if ($amt > 0) {
+                        $loan_items[] = [
+                            'name' => $loan_item['type'] ?? 'Loan Repayment',
+                            'amount' => $amt
+                        ];
+                    }
+                }
+            }
+            
             $row['breakdown'] = [
                 'basic' => $basic,
                 'housing' => $housing,
@@ -92,7 +178,13 @@ try {
                 'nhis' => $nhis,
                 'nhf' => $nhf,
                 'loan' => $loan_total,
-                'lateness' => $lateness_deduction
+                'lateness' => $lateness_deduction,
+                'bonus' => $bonus_total,
+                'custom_deductions' => $custom_ded_total,
+                // Itemized arrays for payslip
+                'bonus_items' => $bonus_items,
+                'deduction_items' => $deduction_items,
+                'loan_items' => $loan_items
             ];
             unset($row['snapshot_json']); // Remove heavy json string
             $entries[] = $row;
@@ -123,6 +215,31 @@ try {
         $locker = new PayrollLock($pdo);
         $result = $locker->lock_payroll($run_id, $user_id);
         echo json_encode($result);
+    }
+    elseif ($action === 'add_adjustment') {
+        // Add one-time bonus/deduction for this payroll period
+        $employee_id = intval($input['employee_id']);
+        $type = $input['type']; // 'bonus' or 'deduction'
+        $name = trim($input['name']);
+        $amount = floatval($input['amount']);
+        $notes = trim($input['notes'] ?? '');
+        $month = intval($input['month']);
+        $year = intval($input['year']);
+        
+        if (!$employee_id || !$name || !$amount) {
+            throw new Exception("Employee, name, and amount are required");
+        }
+        if (!in_array($type, ['bonus', 'deduction'])) {
+            throw new Exception("Invalid adjustment type");
+        }
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO payroll_adjustments (company_id, employee_id, payroll_month, payroll_year, type, name, amount, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$company_id, $employee_id, $month, $year, $type, $name, $amount, $notes, $user_id]);
+        
+        echo json_encode(['status' => true, 'message' => 'Adjustment saved. Re-run payroll to apply changes.']);
     }
     else {
         throw new Exception("Invalid Action");

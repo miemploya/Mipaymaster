@@ -1,0 +1,10 @@
+Requires Ack: 1
+POST: Array
+(
+    [action] => create_case
+    [case_type] => inquiry
+    [subject] => new test
+    [description] => new test
+    [priority] => medium
+    [requires_acknowledgement] => 1
+)

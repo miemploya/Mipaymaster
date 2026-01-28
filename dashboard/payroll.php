@@ -24,6 +24,16 @@ $departments = $stmt->fetchAll(PDO::FETCH_COLUMN);
 $stmt = $pdo->prepare("SELECT id, name FROM salary_categories WHERE company_id = ? ORDER BY name");
 $stmt->execute([$company_id]);
 $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch Company Details for Payslip
+$stmt = $pdo->prepare("SELECT name, address, logo_url, email, phone FROM companies WHERE id = ?");
+$stmt->execute([$company_id]);
+$company_details = $stmt->fetch(PDO::FETCH_ASSOC);
+$payslip_company_name = $company_details['name'] ?? $company_name;
+$company_logo = $company_details['logo_url'] ?? '';
+$company_address = $company_details['address'] ?? '';
+$company_email = $company_details['email'] ?? '';
+$company_phone = $company_details['phone'] ?? '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -59,6 +69,9 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Alpine.js -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <!-- Export Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -129,6 +142,22 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 },
                 
                 anomalies: [],
+                
+                // ADJUSTMENT MODAL
+                adjustmentModalOpen: false,
+                adjustmentForm: {
+                    employee_id: null,
+                    employee_name: '',
+                    type: 'bonus',
+                    name: '',
+                    amount: 0,
+                    notes: ''
+                },
+                adjustments: [],
+                
+                // PAYSLIP MODAL
+                payslipModalOpen: false,
+                selectedEmployee: null,
 
                 init() {
                     this.$watch('view', () => setTimeout(() => lucide.createIcons(), 50));
@@ -294,6 +323,294 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(0);
                     }
                     return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(num);
+                },
+                
+                numberToWords(amount) {
+                    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+                    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+                    const scales = ['', 'Thousand', 'Million', 'Billion'];
+                    
+                    const num = Math.floor(parseFloat(amount) || 0);
+                    if (num === 0) return 'Zero Naira Only';
+                    
+                    const convertHundreds = (n) => {
+                        let result = '';
+                        if (n >= 100) {
+                            result += ones[Math.floor(n / 100)] + ' Hundred ';
+                            n %= 100;
+                        }
+                        if (n >= 20) {
+                            result += tens[Math.floor(n / 10)] + ' ';
+                            n %= 10;
+                        }
+                        if (n > 0) result += ones[n] + ' ';
+                        return result;
+                    };
+                    
+                    let words = '';
+                    let scaleIndex = 0;
+                    let remaining = num;
+                    
+                    while (remaining > 0) {
+                        const chunk = remaining % 1000;
+                        if (chunk > 0) {
+                            words = convertHundreds(chunk) + scales[scaleIndex] + ' ' + words;
+                        }
+                        remaining = Math.floor(remaining / 1000);
+                        scaleIndex++;
+                    }
+                    
+                    // Handle kobo (cents)
+                    const kobo = Math.round((parseFloat(amount) - num) * 100);
+                    let koboText = '';
+                    if (kobo > 0) {
+                        koboText = ', ' + convertHundreds(kobo).trim() + ' Kobo';
+                    }
+                    
+                    return words.trim() + ' Naira' + koboText + ' Only';
+                },
+                
+                // ADJUSTMENT METHODS
+                openAdjustment(emp) {
+                    this.adjustmentForm = {
+                        employee_id: emp.employee_id,
+                        employee_name: emp.first_name + ' ' + emp.last_name,
+                        type: 'bonus',
+                        name: '',
+                        amount: 0,
+                        notes: ''
+                    };
+                    this.adjustmentModalOpen = true;
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                async saveAdjustment() {
+                    if (!this.adjustmentForm.name || !this.adjustmentForm.amount) {
+                        alert('Please fill in name and amount');
+                        return;
+                    }
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/payroll_operations.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                action: 'add_adjustment',
+                                employee_id: this.adjustmentForm.employee_id,
+                                type: this.adjustmentForm.type,
+                                name: this.adjustmentForm.name,
+                                amount: this.adjustmentForm.amount,
+                                notes: this.adjustmentForm.notes,
+                                month: this.currentPeriod.month,
+                                year: this.currentPeriod.year
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            alert('Adjustment added! Re-run payroll to apply.');
+                            this.adjustmentModalOpen = false;
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                
+                // EXPORT METHODS
+                exportToExcel() {
+                    if (!this.sheetData.length) {
+                        alert('No payroll data to export');
+                        return;
+                    }
+                    
+                    // Prepare data for Excel
+                    const data = this.sheetData.map(emp => ({
+                        'Employee': `${emp.first_name} ${emp.last_name}`,
+                        'Payroll ID': emp.payroll_id || 'N/A',
+                        'Basic': emp.breakdown.basic,
+                        'Housing': emp.breakdown.housing,
+                        'Transport': emp.breakdown.transport,
+                        'Bonus': emp.breakdown.bonus || 0,
+                        'Gross Pay': emp.gross_salary,
+                        'PAYE': emp.breakdown.paye,
+                        'Pension': emp.breakdown.pension,
+                        'NHIS': emp.breakdown.nhis,
+                        'Lateness': emp.breakdown.lateness || 0,
+                        'Loan': emp.breakdown.loan,
+                        'Deductions': emp.breakdown.custom_deductions || 0,
+                        'Net Pay': emp.net_pay
+                    }));
+                    
+                    const ws = XLSX.utils.json_to_sheet(data);
+                    const wb = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(wb, ws, 'Payroll');
+                    
+                    // Auto-size columns
+                    const colWidths = Object.keys(data[0]).map(key => ({ wch: Math.max(key.length, 12) }));
+                    ws['!cols'] = colWidths;
+                    
+                    XLSX.writeFile(wb, `Payroll_${this.currentPeriod.year}_${String(this.currentPeriod.month).padStart(2, '0')}.xlsx`);
+                },
+                
+                exportToPDF() {
+                    if (!this.sheetData.length) {
+                        alert('No payroll data to export');
+                        return;
+                    }
+                    
+                    // Create a clean table for PDF
+                    const table = document.querySelector('.payroll-table');
+                    const clone = table.cloneNode(true);
+                    
+                    // Remove Actions column from clone
+                    clone.querySelectorAll('th:last-child, td:last-child').forEach(el => el.remove());
+                    
+                    // Create wrapper
+                    const wrapper = document.createElement('div');
+                    wrapper.style.cssText = 'padding: 20px; background: white;';
+                    wrapper.innerHTML = `
+                        <div style="text-align: center; margin-bottom: 20px;">
+                            <h2 style="margin: 0; font-size: 18px; font-weight: bold;">Payroll Sheet</h2>
+                            <p style="margin: 5px 0; color: #666; font-size: 12px;">Period: ${new Date(this.currentPeriod.year, this.currentPeriod.month - 1).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })}</p>
+                            <p style="margin: 5px 0; color: #666; font-size: 11px;">Generated: ${new Date().toLocaleString()}</p>
+                        </div>
+                    `;
+                    wrapper.appendChild(clone);
+                    
+                    // Style the cloned table
+                    clone.style.cssText = 'width: 100%; border-collapse: collapse; font-size: 8px;';
+                    clone.querySelectorAll('th, td').forEach(cell => {
+                        cell.style.cssText = 'border: 1px solid #ddd; padding: 4px 6px; text-align: left;';
+                    });
+                    clone.querySelectorAll('th').forEach(th => {
+                        th.style.cssText += 'background: #f5f5f5; font-weight: bold;';
+                    });
+                    
+                    const opt = {
+                        margin: [10, 5, 10, 5],
+                        filename: `Payroll_${this.currentPeriod.year}_${String(this.currentPeriod.month).padStart(2, '0')}.pdf`,
+                        image: { type: 'jpeg', quality: 0.98 },
+                        html2canvas: { scale: 2, useCORS: true },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+                    };
+                    
+                    html2pdf().set(opt).from(wrapper).save();
+                },
+                
+                printPayroll() {
+                    if (!this.sheetData.length) {
+                        alert('No payroll data to print');
+                        return;
+                    }
+                    
+                    // Create print-friendly content
+                    const table = document.querySelector('.payroll-table');
+                    const clone = table.cloneNode(true);
+                    
+                    // Remove Actions column
+                    clone.querySelectorAll('th:last-child, td:last-child').forEach(el => el.remove());
+                    
+                    const printWindow = window.open('', '_blank');
+                    printWindow.document.write(`
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <title>Payroll Sheet</title>
+                            <style>
+                                body { font-family: Arial, sans-serif; padding: 20px; }
+                                h2 { text-align: center; margin-bottom: 5px; }
+                                .meta { text-align: center; color: #666; font-size: 12px; margin-bottom: 20px; }
+                                table { width: 100%; border-collapse: collapse; font-size: 10px; }
+                                th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+                                th { background: #f5f5f5; font-weight: bold; }
+                                @media print {
+                                    body { margin: 0; }
+                                    @page { size: landscape; margin: 10mm; }
+                                }
+                            </style>
+                        </head>
+                        <body>
+                            <h2>Payroll Sheet</h2>
+                            <p class="meta">Period: ${new Date(this.currentPeriod.year, this.currentPeriod.month - 1).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })} | Generated: ${new Date().toLocaleString()}</p>
+                            ${clone.outerHTML}
+                        </body>
+                        </html>
+                    `);
+                    printWindow.document.close();
+                    setTimeout(() => {
+                        printWindow.print();
+                        printWindow.close();
+                    }, 500);
+                },
+                
+                // PAYSLIP METHODS
+                viewPayslip(emp) {
+                    this.selectedEmployee = emp;
+                    this.payslipModalOpen = true;
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                printPayslip() {
+                    const payslipContent = document.getElementById('payslip-content');
+                    const clone = payslipContent.cloneNode(true);
+                    
+                    const printWindow = window.open('', '_blank');
+                    printWindow.document.write(`
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <title>Payslip - ${this.selectedEmployee.first_name} ${this.selectedEmployee.last_name}</title>
+                            <style>
+                                * { margin: 0; padding: 0; box-sizing: border-box; }
+                                body { font-family: Arial, sans-serif; padding: 20px; background: white; }
+                                .payslip-container { max-width: 800px; margin: 0 auto; }
+                                .header { display: flex; justify-content: space-between; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #0066cc; }
+                                .company-name { font-size: 24px; font-weight: bold; color: #0066cc; }
+                                .payslip-title { font-size: 18px; color: #666; }
+                                .employee-info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; padding: 15px; background: #f5f5f5; border-radius: 8px; }
+                                .info-item { font-size: 13px; }
+                                .info-label { color: #666; }
+                                .info-value { font-weight: bold; }
+                                .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+                                .column { padding: 15px; border-radius: 8px; }
+                                .earnings { background: #e8f5e9; border: 1px solid #c8e6c9; }
+                                .deductions { background: #ffebee; border: 1px solid #ffcdd2; }
+                                .column-title { font-size: 14px; font-weight: bold; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.1); }
+                                .earnings .column-title { color: #2e7d32; }
+                                .deductions .column-title { color: #c62828; }
+                                .line-item { display: flex; justify-content: space-between; font-size: 12px; padding: 5px 0; }
+                                .line-item.total { font-weight: bold; border-top: 1px solid rgba(0,0,0,0.2); margin-top: 10px; padding-top: 10px; }
+                                .net-pay { text-align: center; padding: 20px; background: linear-gradient(135deg, #0066cc, #0099ff); color: white; border-radius: 8px; }
+                                .net-pay-label { font-size: 14px; opacity: 0.9; }
+                                .net-pay-amount { font-size: 28px; font-weight: bold; }
+                                @media print { body { padding: 0; } @page { margin: 15mm; } }
+                            </style>
+                        </head>
+                        <body>${clone.innerHTML}</body>
+                        </html>
+                    `);
+                    printWindow.document.close();
+                    setTimeout(() => {
+                        printWindow.print();
+                        printWindow.close();
+                    }, 500);
+                },
+                
+                exportPayslipPDF() {
+                    const payslipContent = document.getElementById('payslip-content');
+                    
+                    const opt = {
+                        margin: [10, 10, 10, 10],
+                        filename: `Payslip_${this.selectedEmployee.first_name}_${this.selectedEmployee.last_name}_${this.currentPeriod.year}_${String(this.currentPeriod.month).padStart(2, '0')}.pdf`,
+                        image: { type: 'jpeg', quality: 0.98 },
+                        html2canvas: { scale: 2, useCORS: true },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    };
+                    
+                    html2pdf().set(opt).from(payslipContent).save();
                 }
             }
         }
@@ -566,7 +883,22 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 <div x-show="view === 'sheet'" x-cloak x-transition.opacity>
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-bold text-slate-900 dark:text-white">Payroll Sheet: <?php echo date('M Y'); ?> (Draft)</h2>
-                        <button @click="changeView('preview')" class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm font-bold shadow-md">Proceed to Validation</button>
+                        <div class="flex items-center gap-2">
+                            <!-- Export Buttons -->
+                            <button @click="exportToExcel()" class="flex items-center gap-1.5 px-3 py-2 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 text-sm font-medium transition-colors" title="Export to Excel">
+                                <i data-lucide="file-spreadsheet" class="w-4 h-4"></i>
+                                <span class="hidden sm:inline">Excel</span>
+                            </button>
+                            <button @click="exportToPDF()" class="flex items-center gap-1.5 px-3 py-2 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm font-medium transition-colors" title="Export to PDF">
+                                <i data-lucide="file-text" class="w-4 h-4"></i>
+                                <span class="hidden sm:inline">PDF</span>
+                            </button>
+                            <button @click="printPayroll()" class="flex items-center gap-1.5 px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 text-sm font-medium transition-colors" title="Print">
+                                <i data-lucide="printer" class="w-4 h-4"></i>
+                                <span class="hidden sm:inline">Print</span>
+                            </button>
+                            <button @click="changeView('preview')" class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm font-bold shadow-md">Proceed to Validation</button>
+                        </div>
                     </div>
 
                     <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm payroll-sheet-container">
@@ -580,7 +912,7 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <th class="bg-green-50/50 dark:bg-green-900/10 border-l border-slate-200 dark:border-slate-800 min-w-[100px]">Basic</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Housing</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Transport</th>
-                                    <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-green-700 dark:text-green-400">Overtime</th>
+                                    <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-green-700 dark:text-green-400">Bonus</th>
                                     <th class="bg-slate-200 dark:bg-slate-800 min-w-[120px]">Gross Pay</th>
                                     
                                     <!-- Deductions Group -->
@@ -589,9 +921,11 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">NHIS</th>
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-amber-600 dark:text-amber-400">Lateness</th>
                                     <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Loan</th>
+                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Deductions</th>
                                     
                                     <!-- Summary -->
                                     <th class="bg-brand-50 dark:bg-brand-900/20 border-l border-slate-200 dark:border-slate-800 text-brand-700 dark:text-white min-w-[140px]">Net Pay</th>
+                                    <th class="bg-slate-100 dark:bg-slate-900 min-w-[80px] text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -605,7 +939,7 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.basic)"></td>
                                         <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.housing)"></td>
                                         <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.transport)"></td>
-                                        <td class="bg-green-50/5 dark:bg-transparent text-green-600">0.00</td>
+                                        <td class="bg-green-50/5 dark:bg-transparent text-green-600" x-text="formatCurrency(emp.breakdown.bonus || 0)"></td>
                                         <td class="font-bold bg-slate-50 dark:bg-slate-900" x-text="formatCurrency(emp.gross_salary)"></td>
                                         
                                         <!-- Deductions -->
@@ -614,16 +948,558 @@ $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhis)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent text-amber-600" x-text="formatCurrency(emp.breakdown.lateness || 0)"></td>
                                         <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.loan)"></td>
+                                        <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.custom_deductions || 0)"></td>
                                         
                                         <!-- Net -->
                                         <td class="font-bold bg-brand-50/30 text-brand-700 dark:text-white border-l border-slate-200 dark:border-slate-800" x-text="formatCurrency(emp.net_pay)"></td>
+                                        <!-- Actions -->
+                                        <td class="text-center">
+                                            <div class="flex items-center justify-center gap-1">
+                                                <button @click="viewPayslip(emp)" class="px-2 py-1 text-xs bg-slate-100 text-slate-600 rounded hover:bg-slate-200 transition-colors" title="View Payslip">
+                                                    <i data-lucide="file-text" class="w-3 h-3 inline"></i>
+                                                </button>
+                                                <button @click="openAdjustment(emp)" class="px-2 py-1 text-xs bg-brand-50 text-brand-600 rounded hover:bg-brand-100 transition-colors" title="Add Adjustment">
+                                                    <i data-lucide="plus-circle" class="w-3 h-3 inline"></i>
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 </template>
                                 <tr x-show="sheetData.length === 0">
-                                    <td colspan="11" class="p-8 text-center text-slate-500 italic">No payroll data generated for this period. Run payroll to see entries.</td>
+                                    <td colspan="14" class="p-8 text-center text-slate-500 italic">No payroll data generated for this period. Run payroll to see entries.</td>
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    
+                    <!-- ADJUSTMENT MODAL -->
+                    <div x-show="adjustmentModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+                        <div class="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" @click="adjustmentModalOpen = false"></div>
+                        <div class="relative bg-white dark:bg-slate-950 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" @click.stop>
+                            <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Add One-Time Adjustment</h3>
+                                <button @click="adjustmentModalOpen = false" class="text-slate-400 hover:text-slate-600">
+                                    <i data-lucide="x" class="w-5 h-5"></i>
+                                </button>
+                            </div>
+                            <div class="p-6 space-y-4">
+                                <div class="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg">
+                                    <p class="text-xs text-slate-500">Employee</p>
+                                    <p class="font-bold text-slate-900 dark:text-white" x-text="adjustmentForm.employee_name"></p>
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Type</label>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <label class="flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'bonus' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'">
+                                            <input type="radio" x-model="adjustmentForm.type" value="bonus" class="text-green-600">
+                                            <span class="text-sm font-medium">Bonus</span>
+                                        </label>
+                                        <label class="flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'deduction' ? 'border-red-500 bg-red-50 dark:bg-red-900/20' : 'border-slate-200 dark:border-slate-700'">
+                                            <input type="radio" x-model="adjustmentForm.type" value="deduction" class="text-red-600">
+                                            <span class="text-sm font-medium">Deduction</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Name/Description</label>
+                                    <input type="text" x-model="adjustmentForm.name" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="e.g. Performance Bonus, Overtime Pay">
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Amount (₦)</label>
+                                    <input type="number" x-model="adjustmentForm.amount" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="0.00" step="100">
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Notes (Optional)</label>
+                                    <textarea x-model="adjustmentForm.notes" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" rows="2" placeholder="Add notes..."></textarea>
+                                </div>
+                            </div>
+                            <div class="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3">
+                                <button @click="adjustmentModalOpen = false" class="px-4 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
+                                <button @click="saveAdjustment()" :disabled="loading" class="px-4 py-2 bg-brand-600 text-white text-sm font-bold rounded-lg hover:bg-brand-700 disabled:opacity-50">
+                                    <span x-show="!loading">Save Adjustment</span>
+                                    <span x-show="loading">Saving...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- PAYSLIP MODAL -->
+                <div x-show="payslipModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div class="absolute inset-0 bg-black/50" @click="payslipModalOpen = false"></div>
+                    <div class="relative bg-white dark:bg-slate-950 rounded-2xl shadow-xl w-full max-w-3xl max-h-[95vh] overflow-y-auto">
+                        <!-- Modal Header -->
+                        <div class="sticky top-0 bg-white dark:bg-slate-950 px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center z-10">
+                            <h3 class="text-lg font-bold text-slate-900 dark:text-white">Employee Payslip</h3>
+                            <div class="flex items-center gap-2">
+                                <button @click="printPayslip()" class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 text-sm" title="Print">
+                                    <i data-lucide="printer" class="w-4 h-4"></i>
+                                    Print
+                                </button>
+                                <button @click="exportPayslipPDF()" class="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm" title="Download PDF">
+                                    <i data-lucide="file-text" class="w-4 h-4"></i>
+                                    PDF
+                                </button>
+                                <button @click="payslipModalOpen = false" class="text-slate-400 hover:text-slate-600">
+                                    <i data-lucide="x" class="w-5 h-5"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Payslip Content -->
+                        <div id="payslip-content" class="p-6" x-show="selectedEmployee">
+                            <style>
+                                .payslip-wrapper {
+                                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                                    background: #fff;
+                                    position: relative;
+                                    overflow: hidden;
+                                }
+                                .payslip-watermark {
+                                    position: absolute;
+                                    top: 50%;
+                                    left: 50%;
+                                    transform: translate(-50%, -50%) rotate(-30deg);
+                                    font-size: 80px;
+                                    font-weight: bold;
+                                    color: rgba(200, 200, 200, 0.15);
+                                    white-space: nowrap;
+                                    pointer-events: none;
+                                    z-index: 0;
+                                    user-select: none;
+                                }
+                                .payslip-content-inner {
+                                    position: relative;
+                                    z-index: 1;
+                                }
+                                .payslip-header {
+                                    display: flex;
+                                    justify-content: space-between;
+                                    align-items: flex-start;
+                                    border-bottom: 3px solid #0066cc;
+                                    padding-bottom: 15px;
+                                    margin-bottom: 20px;
+                                }
+                                .company-info {
+                                    display: flex;
+                                    align-items: flex-start;
+                                    gap: 15px;
+                                }
+                                .company-logo img {
+                                    max-height: 60px;
+                                    max-width: 120px;
+                                    object-fit: contain;
+                                }
+                                .company-details h1 {
+                                    font-size: 20px;
+                                    font-weight: bold;
+                                    color: #0066cc;
+                                    margin: 0 0 5px 0;
+                                }
+                                .company-details p {
+                                    font-size: 11px;
+                                    color: #666;
+                                    margin: 2px 0;
+                                }
+                                .company-contact p {
+                                    font-size: 11px;
+                                    color: #666;
+                                    margin: 2px 0;
+                                }
+                                .payslip-label {
+                                    text-align: right;
+                                }
+                                .payslip-label h2 {
+                                    font-size: 22px;
+                                    font-weight: bold;
+                                    color: #333;
+                                    margin: 0;
+                                }
+                                .payslip-label p {
+                                    font-size: 11px;
+                                    color: #999;
+                                }
+                                .employee-details {
+                                    display: grid;
+                                    grid-template-columns: repeat(4, 1fr);
+                                    gap: 12px;
+                                    background: #f8fafc;
+                                    padding: 15px;
+                                    border-radius: 8px;
+                                    margin-bottom: 20px;
+                                }
+                                .detail-item label {
+                                    font-size: 10px;
+                                    color: #888;
+                                    text-transform: uppercase;
+                                    display: block;
+                                }
+                                .detail-item span {
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: #333;
+                                }
+                                .columns-container {
+                                    display: grid;
+                                    grid-template-columns: 1fr 1fr;
+                                    gap: 20px;
+                                    margin-bottom: 20px;
+                                }
+                                .column-box {
+                                    padding: 15px;
+                                    border-radius: 10px;
+                                }
+                                .earnings-box {
+                                    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+                                    border: 1px solid #a5d6a7;
+                                }
+                                .deductions-box {
+                                    background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+                                    border: 1px solid #ef9a9a;
+                                }
+                                .column-title {
+                                    font-size: 12px;
+                                    font-weight: bold;
+                                    text-transform: uppercase;
+                                    padding-bottom: 10px;
+                                    margin-bottom: 10px;
+                                    border-bottom: 2px solid rgba(0,0,0,0.1);
+                                }
+                                .earnings-box .column-title { color: #2e7d32; }
+                                .deductions-box .column-title { color: #c62828; }
+                                .line-item {
+                                    display: flex;
+                                    justify-content: space-between;
+                                    padding: 6px 0;
+                                    font-size: 12px;
+                                }
+                                .line-item-name { color: #555; }
+                                .line-item-amount { font-weight: 600; color: #333; }
+                                .line-item.bonus .line-item-name, .line-item.bonus .line-item-amount { color: #2e7d32; }
+                                .line-item.deduction .line-item-name, .line-item.deduction .line-item-amount { color: #c62828; }
+                                .line-item.total {
+                                    border-top: 2px solid rgba(0,0,0,0.15);
+                                    margin-top: 10px;
+                                    padding-top: 10px;
+                                    font-weight: bold;
+                                }
+                                .pension-section {
+                                    background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+                                    border: 1px solid #90caf9;
+                                    border-radius: 10px;
+                                    padding: 15px;
+                                    margin-bottom: 20px;
+                                }
+                                .pension-section .section-title {
+                                    font-size: 12px;
+                                    font-weight: bold;
+                                    color: #1565c0;
+                                    text-transform: uppercase;
+                                    margin-bottom: 10px;
+                                    padding-bottom: 8px;
+                                    border-bottom: 2px solid rgba(21, 101, 192, 0.2);
+                                }
+                                .pension-grid {
+                                    display: grid;
+                                    grid-template-columns: repeat(3, 1fr);
+                                    gap: 15px;
+                                }
+                                .pension-item label {
+                                    font-size: 10px;
+                                    color: #1565c0;
+                                    display: block;
+                                }
+                                .pension-item span {
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: #0d47a1;
+                                }
+                                .net-pay-section {
+                                    background: linear-gradient(135deg, #1565c0 0%, #0d47a1 50%, #1a237e 100%);
+                                    border-radius: 12px;
+                                    padding: 25px;
+                                    text-align: center;
+                                    color: white;
+                                    margin-bottom: 20px;
+                                    box-shadow: 0 4px 15px rgba(21, 101, 192, 0.3);
+                                }
+                                .net-pay-label {
+                                    font-size: 12px;
+                                    text-transform: uppercase;
+                                    letter-spacing: 2px;
+                                    opacity: 0.9;
+                                    margin-bottom: 5px;
+                                }
+                                .net-pay-amount {
+                                    font-size: 32px;
+                                    font-weight: bold;
+                                    margin-bottom: 8px;
+                                }
+                                .net-pay-words {
+                                    font-size: 12px;
+                                    font-style: italic;
+                                    opacity: 0.85;
+                                    border-top: 1px solid rgba(255,255,255,0.3);
+                                    padding-top: 10px;
+                                    margin-top: 5px;
+                                }
+                                .ytd-section {
+                                    background: #f1f5f9;
+                                    border: 1px solid #e2e8f0;
+                                    border-radius: 10px;
+                                    padding: 15px;
+                                    margin-bottom: 20px;
+                                }
+                                .ytd-section .section-title {
+                                    font-size: 12px;
+                                    font-weight: bold;
+                                    color: #475569;
+                                    text-transform: uppercase;
+                                    margin-bottom: 12px;
+                                    padding-bottom: 8px;
+                                    border-bottom: 2px solid #cbd5e1;
+                                }
+                                .ytd-grid {
+                                    display: grid;
+                                    grid-template-columns: repeat(4, 1fr);
+                                    gap: 15px;
+                                }
+                                .ytd-item {
+                                    text-align: center;
+                                    padding: 10px;
+                                    background: white;
+                                    border-radius: 8px;
+                                }
+                                .ytd-item label {
+                                    font-size: 10px;
+                                    color: #64748b;
+                                    text-transform: uppercase;
+                                    display: block;
+                                    margin-bottom: 5px;
+                                }
+                                .ytd-item span {
+                                    font-size: 14px;
+                                    font-weight: bold;
+                                    color: #334155;
+                                }
+                                .payslip-footer {
+                                    text-align: center;
+                                    padding-top: 20px;
+                                    border-top: 2px solid #e2e8f0;
+                                }
+                                .footer-main {
+                                    font-size: 11px;
+                                    color: #64748b;
+                                    margin-bottom: 5px;
+                                }
+                                .footer-powered {
+                                    font-size: 10px;
+                                    color: #94a3b8;
+                                }
+                                .footer-powered a {
+                                    color: #0066cc;
+                                    text-decoration: none;
+                                }
+                            </style>
+                            
+                            <div class="payslip-wrapper">
+                                <!-- Confidential Watermark -->
+                                <div class="payslip-watermark">CONFIDENTIAL</div>
+                                
+                                <div class="payslip-content-inner">
+                                    <!-- Header with Logo -->
+                                    <div class="payslip-header">
+                                        <div class="company-info">
+                                            <?php 
+                                            $has_logo = !empty($company_logo) && file_exists(__DIR__ . '/../uploads/logos/' . $company_logo);
+                                            if ($has_logo): 
+                                            ?>
+                                            <!-- Logo available - show logo as main identifier -->
+                                            <div class="company-logo">
+                                                <img src="../uploads/logos/<?php echo htmlspecialchars($company_logo); ?>" alt="<?php echo htmlspecialchars($payslip_company_name); ?>">
+                                            </div>
+                                            <?php else: ?>
+                                            <!-- No logo - show company name as main identifier -->
+                                            <div class="company-details">
+                                                <h1><?php echo htmlspecialchars($payslip_company_name); ?></h1>
+                                            </div>
+                                            <?php endif; ?>
+                                            <!-- Address, Email, Phone always shown if available -->
+                                            <div class="company-contact">
+                                                <?php if (!empty($company_address)): ?>
+                                                <p><?php echo htmlspecialchars($company_address); ?></p>
+                                                <?php endif; ?>
+                                                <?php if (!empty($company_email)): ?>
+                                                <p><?php echo htmlspecialchars($company_email); ?></p>
+                                                <?php endif; ?>
+                                                <?php if (!empty($company_phone)): ?>
+                                                <p><?php echo htmlspecialchars($company_phone); ?></p>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                        <div class="payslip-label">
+                                            <h2>PAYSLIP</h2>
+                                            <p x-text="new Date(currentPeriod.year, currentPeriod.month - 1).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })"></p>
+                                            <p x-text="'Generated: ' + new Date().toLocaleDateString()"></p>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Employee Details -->
+                                    <div class="employee-details">
+                                        <div class="detail-item">
+                                            <label>Employee Name</label>
+                                            <span x-text="selectedEmployee?.first_name + ' ' + selectedEmployee?.last_name"></span>
+                                        </div>
+                                        <div class="detail-item">
+                                            <label>Employee ID</label>
+                                            <span x-text="selectedEmployee?.payroll_id || 'N/A'"></span>
+                                        </div>
+                                        <div class="detail-item">
+                                            <label>Pay Period</label>
+                                            <span x-text="new Date(currentPeriod.year, currentPeriod.month - 1).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })"></span>
+                                        </div>
+                                        <div class="detail-item">
+                                            <label>Payment Date</label>
+                                            <span x-text="new Date(currentPeriod.year, currentPeriod.month, 0).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })"></span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Earnings & Deductions -->
+                                    <div class="columns-container">
+                                        <!-- Earnings -->
+                                        <div class="column-box earnings-box">
+                                            <div class="column-title">Earnings</div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">Basic Salary</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.basic || 0)"></span>
+                                            </div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">Housing Allowance</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.housing || 0)"></span>
+                                            </div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">Transport Allowance</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.transport || 0)"></span>
+                                            </div>
+                                            <template x-for="(bonus, idx) in (selectedEmployee?.breakdown?.bonus_items || [])" :key="'bonus-'+idx">
+                                                <div class="line-item bonus">
+                                                    <span class="line-item-name" x-text="bonus.name"></span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(bonus.amount)"></span>
+                                                </div>
+                                            </template>
+                                            <div class="line-item total">
+                                                <span class="line-item-name">Gross Earnings</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.gross_salary || 0)"></span>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Deductions -->
+                                        <div class="column-box deductions-box">
+                                            <div class="column-title">Deductions</div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">PAYE Tax</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.paye || 0)"></span>
+                                            </div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">Pension (Employee 8%)</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.pension || 0)"></span>
+                                            </div>
+                                            <div class="line-item">
+                                                <span class="line-item-name">NHIS</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.nhis || 0)"></span>
+                                            </div>
+                                            <template x-if="selectedEmployee?.breakdown?.nhf > 0">
+                                                <div class="line-item">
+                                                    <span class="line-item-name">NHF</span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.nhf || 0)"></span>
+                                                </div>
+                                            </template>
+                                            <template x-if="selectedEmployee?.breakdown?.lateness > 0">
+                                                <div class="line-item deduction">
+                                                    <span class="line-item-name">Lateness Penalty</span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.lateness || 0)"></span>
+                                                </div>
+                                            </template>
+                                            <template x-for="(loan, idx) in (selectedEmployee?.breakdown?.loan_items || [])" :key="'loan-'+idx">
+                                                <div class="line-item deduction">
+                                                    <span class="line-item-name" x-text="loan.name"></span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(loan.amount)"></span>
+                                                </div>
+                                            </template>
+                                            <template x-for="(ded, idx) in (selectedEmployee?.breakdown?.deduction_items || [])" :key="'ded-'+idx">
+                                                <div class="line-item deduction">
+                                                    <span class="line-item-name" x-text="ded.name"></span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(ded.amount)"></span>
+                                                </div>
+                                            </template>
+                                            <div class="line-item total">
+                                                <span class="line-item-name">Total Deductions</span>
+                                                <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.total_deductions || 0)"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Pension Details Section -->
+                                    <div class="pension-section">
+                                        <div class="section-title">Pension Details</div>
+                                        <div class="pension-grid">
+                                            <div class="pension-item">
+                                                <label>Employee Contribution (8%)</label>
+                                                <span x-text="formatCurrency(selectedEmployee?.breakdown?.pension || 0)"></span>
+                                            </div>
+                                            <div class="pension-item">
+                                                <label>Employer Contribution (10%)</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.breakdown?.pension || 0) * 1.25)"></span>
+                                            </div>
+                                            <div class="pension-item">
+                                                <label>Total Pension</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.breakdown?.pension || 0) * 2.25)"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Net Pay Section -->
+                                    <div class="net-pay-section">
+                                        <div class="net-pay-label">Net Pay</div>
+                                        <div class="net-pay-amount" x-text="formatCurrency(selectedEmployee?.net_pay || 0)"></div>
+                                        <div class="net-pay-words" x-text="numberToWords(selectedEmployee?.net_pay || 0)"></div>
+                                    </div>
+                                    
+                                    <!-- Year to Date Summary -->
+                                    <div class="ytd-section">
+                                        <div class="section-title">Year to Date (YTD) Summary</div>
+                                        <div class="ytd-grid">
+                                            <div class="ytd-item">
+                                                <label>YTD Gross</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.gross_salary || 0) * currentPeriod.month)"></span>
+                                            </div>
+                                            <div class="ytd-item">
+                                                <label>YTD Tax (PAYE)</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.breakdown?.paye || 0) * currentPeriod.month)"></span>
+                                            </div>
+                                            <div class="ytd-item">
+                                                <label>YTD Pension</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.breakdown?.pension || 0) * currentPeriod.month)"></span>
+                                            </div>
+                                            <div class="ytd-item">
+                                                <label>YTD Net</label>
+                                                <span x-text="formatCurrency((selectedEmployee?.net_pay || 0) * currentPeriod.month)"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Footer -->
+                                    <div class="payslip-footer">
+                                        <div class="footer-main">This is a system-generated payslip from MiPayMaster. No signature required.</div>
+                                        <div class="footer-powered">Powered by Miemploya Platform • <a href="https://www.miemploya.com" target="_blank">www.miemploya.com</a></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
