@@ -361,7 +361,84 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                  // Or we could log it.
             }
 
-            // Pension
+            // --- COLLECT ALL BONUSES FIRST (needed for PAYE calculation) ---
+            // Bonuses are TAXABLE but NOT PENSIONABLE per PIT Act
+            $custom_bonuses = [];
+            $total_bonus_amount = 0;
+            $taxable_bonus_total = 0;
+
+            // Fetch applicable recurring bonuses (company-wide, category, department, or employee-specific)
+            $stmt_bonus = $pdo->prepare("
+                SELECT bt.* FROM payroll_bonus_types bt
+                WHERE bt.company_id = ? AND bt.is_active = 1
+                AND (
+                    bt.scope = 'company' OR
+                    (bt.scope = 'category' AND bt.category_id = ?) OR
+                    (bt.scope = 'department' AND bt.department_id = ?) OR
+                    (bt.scope = 'employee' AND bt.id IN (
+                        SELECT bonus_type_id FROM employee_bonus_assignments 
+                        WHERE employee_id = ? AND is_active = 1
+                    ))
+                )
+            ");
+            $stmt_bonus->execute([$company_id, $emp['category_id'], $emp['department_id'], $emp['id']]);
+            
+            while ($bonus = $stmt_bonus->fetch(PDO::FETCH_ASSOC)) {
+                $amount = 0;
+                if ($bonus['calculation_mode'] === 'fixed') {
+                    $amount = floatval($bonus['amount']);
+                } else { // percentage
+                    $base = ($bonus['percentage_base'] === 'basic') ? $basic : $adjusted_gross;
+                    $amount = $base * (floatval($bonus['percentage']) / 100);
+                }
+                if ($amount > 0) {
+                    $total_bonus_amount += $amount;
+                    // Check if bonus is taxable (default to true per PIT Act)
+                    $is_taxable = isset($bonus['is_taxable']) ? (bool)$bonus['is_taxable'] : true;
+                    if ($is_taxable) {
+                        $taxable_bonus_total += $amount;
+                    }
+                    $custom_bonuses[] = ['name' => $bonus['name'], 'amount' => $amount, 'scope' => $bonus['scope'], 'taxable' => $is_taxable];
+                }
+            }
+
+            // Fetch One-Time Adjustments (bonuses only, for tax calculation)
+            $onetime_adjustments = [];
+            $onetime_bonus_total = 0;
+            $onetime_taxable_bonus = 0;
+            $onetime_deduction_total = 0;
+            
+            $stmt_adj = $pdo->prepare("
+                SELECT * FROM payroll_adjustments 
+                WHERE company_id = ? AND employee_id = ? 
+                AND payroll_month = ? AND payroll_year = ?
+            ");
+            $stmt_adj->execute([$company_id, $emp['id'], $month, $year]);
+            
+            while ($adj = $stmt_adj->fetch(PDO::FETCH_ASSOC)) {
+                $adj_amount = floatval($adj['amount']);
+                if ($adj['type'] === 'bonus') {
+                    $onetime_bonus_total += $adj_amount;
+                    // Check if taxable (default true per PIT Act)
+                    $is_taxable = isset($adj['is_taxable']) ? (bool)$adj['is_taxable'] : true;
+                    if ($is_taxable) {
+                        $onetime_taxable_bonus += $adj_amount;
+                    }
+                } else {
+                    $onetime_deduction_total += $adj_amount;
+                }
+                $onetime_adjustments[] = [
+                    'name' => $adj['name'],
+                    'type' => $adj['type'],
+                    'amount' => $adj_amount,
+                    'taxable' => isset($adj['is_taxable']) ? (bool)$adj['is_taxable'] : ($adj['type'] === 'bonus'),
+                    'notes' => $adj['notes']
+                ];
+            }
+            // ----------------------------------------
+
+            // Pension (based on pensionable sum - Basic + Housing + Transport)
+            // NOTE: Bonuses are NOT pensionable
             $pension_emp = 0;
             $pension_emplr = 0;
 
@@ -371,34 +448,72 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             }
 
             // NHIS / NHF
-            $nhis = $settings['enable_nhis'] ? ($adjusted_gross * 0.05) : 0; 
+            // NHIS: Employee = 5% of Basic, Employer = 10% of Basic (per Nigerian NHIS/NHIA guidelines)
+            // NHF: 2.5% of Basic
+            $nhis = $settings['enable_nhis'] ? ($basic * 0.05) : 0;  // Employee 5% of Basic
+            $nhis_employer = $settings['enable_nhis'] ? ($basic * 0.10) : 0;  // Employer 10% of Basic
             $nhf = $settings['enable_nhf'] ? ($basic * 0.025) : 0;
 
-            // PAYE Tax (Recalculated on Adjusted Gross)
+            // PAYE Tax - Calculated on (Adjusted Gross + ALL TAXABLE BONUSES)
+            // Per PIT Act, all bonuses are taxable income
             $tax_paye = 0;
             $cra_values = []; // For snapshot
             
+            // --- OVERTIME PAY CALCULATION (NEW) ---
+            // Per PIT Act, overtime is taxable income (like bonuses)
+            $overtime_hours = 0;
+            $overtime_pay = 0;
+            $overtime_notes = '';
+            
+            if (isset($settings['overtime_enabled']) && $settings['overtime_enabled']) {
+                // Fetch overtime hours for this employee for this period
+                $stmt_ot = $pdo->prepare("SELECT overtime_hours, notes FROM payroll_overtime WHERE company_id = ? AND employee_id = ? AND payroll_month = ? AND payroll_year = ?");
+                $stmt_ot->execute([$company_id, $emp['id'], $month, $year]);
+                $ot_record = $stmt_ot->fetch(PDO::FETCH_ASSOC);
+                
+                if ($ot_record && floatval($ot_record['overtime_hours']) > 0) {
+                    $overtime_hours = floatval($ot_record['overtime_hours']);
+                    $overtime_notes = $ot_record['notes'] ?? '';
+                    
+                    // Calculate overtime pay: hourly_rate * hours * overtime_rate
+                    $daily_hours = floatval($settings['daily_work_hours'] ?? 8.0);
+                    $monthly_days = intval($settings['monthly_work_days'] ?? 22);
+                    $ot_rate_multiplier = floatval($settings['overtime_rate'] ?? 1.5);
+                    
+                    $hourly_rate = $adjusted_gross / ($daily_hours * $monthly_days);
+                    $overtime_pay = $overtime_hours * $hourly_rate * $ot_rate_multiplier;
+                }
+            }
+            // ----------------------------------------
+            
             if ($settings['enable_paye']) {
-                $gross_annual = $adjusted_gross * 12;
+                // TAXABLE INCOME = Adjusted Gross + All Taxable Bonuses (recurring + one-time) + Overtime Pay
+                $total_taxable_income = $adjusted_gross + $taxable_bonus_total + $onetime_taxable_bonus + $overtime_pay;
+                
+                $gross_annual = $total_taxable_income * 12;
                 $pension_annual = $pension_emp * 12;
                 $nhf_annual = $nhf * 12;
                 $nhis_annual = $nhis * 12;
                 
-                // We should expose CRA details if possible, but existing function just returns tax.
-                // Let's compute tax.
+                // Calculate PAYE on total taxable income
                 $tax_annual = calculate_paye($gross_annual, $pension_annual, $nhf_annual, $nhis_annual, (int)$year);
                 $tax_paye = $tax_annual / 12;
-                
-                // For snapshot: simple approximate or reuse logic if we needed deep details.
-                // Storing the calculated tax is key.
             }
 
-            // Totals
+            // Totals (Statutory Deductions)
             $total_deductions = $tax_paye + $pension_emp + $nhis + $nhf;
             $net_pay = $adjusted_gross - $total_deductions;
 
             // --- ATTENDANCE DEDUCTION LOGIC ---
-            $stmt_att = $pdo->prepare("SELECT SUM(final_deduction_amount) FROM attendance_logs WHERE employee_id = ? AND MONTH(date) = ? AND YEAR(date) = ?");
+            // Only sum deductions that have NOT been reversed (e.g., excused absences)
+            $stmt_att = $pdo->prepare("
+                SELECT SUM(final_deduction_amount) 
+                FROM attendance_logs 
+                WHERE employee_id = ? 
+                  AND MONTH(date) = ? 
+                  AND YEAR(date) = ?
+                  AND (deduction_reversed = 0 OR deduction_reversed IS NULL)
+            ");
             $stmt_att->execute([$emp['id'], $month, $year]);
             $attendance_deduction = floatval($stmt_att->fetchColumn() ?: 0);
             
@@ -455,41 +570,9 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $net_pay -= $total_loan_amount;
             // ---------------------------
 
-            // --- CUSTOM BONUS/DEDUCTION LOGIC ---
-            $custom_bonuses = [];
+            // --- CUSTOM DEDUCTION LOGIC ---
             $custom_deductions = [];
-            $total_bonus_amount = 0;
             $total_custom_deduction_amount = 0;
-
-            // Fetch applicable bonuses (company-wide, category, department, or employee-specific)
-            $stmt_bonus = $pdo->prepare("
-                SELECT bt.* FROM payroll_bonus_types bt
-                WHERE bt.company_id = ? AND bt.is_active = 1
-                AND (
-                    bt.scope = 'company' OR
-                    (bt.scope = 'category' AND bt.category_id = ?) OR
-                    (bt.scope = 'department' AND bt.department_id = ?) OR
-                    (bt.scope = 'employee' AND bt.id IN (
-                        SELECT bonus_type_id FROM employee_bonus_assignments 
-                        WHERE employee_id = ? AND is_active = 1
-                    ))
-                )
-            ");
-            $stmt_bonus->execute([$company_id, $emp['category_id'], $emp['department_id'], $emp['id']]);
-            
-            while ($bonus = $stmt_bonus->fetch(PDO::FETCH_ASSOC)) {
-                $amount = 0;
-                if ($bonus['calculation_mode'] === 'fixed') {
-                    $amount = floatval($bonus['amount']);
-                } else { // percentage
-                    $base = ($bonus['percentage_base'] === 'basic') ? $basic : $adjusted_gross;
-                    $amount = $base * (floatval($bonus['percentage']) / 100);
-                }
-                if ($amount > 0) {
-                    $total_bonus_amount += $amount;
-                    $custom_bonuses[] = ['name' => $bonus['name'], 'amount' => $amount, 'scope' => $bonus['scope']];
-                }
-            }
 
             // Fetch applicable deductions (company-wide, category, department, or employee-specific)
             $stmt_ded = $pdo->prepare("
@@ -520,43 +603,20 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                     $custom_deductions[] = ['name' => $ded['name'], 'amount' => $amount, 'scope' => $ded['scope']];
                 }
             }
-
-            // --- ONE-TIME ADJUSTMENTS (from payroll_adjustments table) ---
-            $onetime_adjustments = [];
-            $onetime_bonus_total = 0;
-            $onetime_deduction_total = 0;
-            
-            $stmt_adj = $pdo->prepare("
-                SELECT * FROM payroll_adjustments 
-                WHERE company_id = ? AND employee_id = ? 
-                AND payroll_month = ? AND payroll_year = ?
-            ");
-            $stmt_adj->execute([$company_id, $emp['id'], $month, $year]);
-            
-            while ($adj = $stmt_adj->fetch(PDO::FETCH_ASSOC)) {
-                $adj_amount = floatval($adj['amount']);
-                if ($adj['type'] === 'bonus') {
-                    $onetime_bonus_total += $adj_amount;
-                } else {
-                    $onetime_deduction_total += $adj_amount;
-                }
-                $onetime_adjustments[] = [
-                    'name' => $adj['name'],
-                    'type' => $adj['type'],
-                    'amount' => $adj_amount,
-                    'notes' => $adj['notes']
-                ];
-            }
             // ----------------------------------------
 
             // Apply bonuses, custom deductions, and one-time adjustments to Net Pay
+            // Note: Bonuses and one-time adjustments already collected earlier for PAYE calculation
             $net_pay += $total_bonus_amount + $onetime_bonus_total;
             $net_pay -= $total_custom_deduction_amount + $onetime_deduction_total;
             // ----------------------------------------
 
-            // Calculate GROSS WITH BONUSES (for accurate payslip display)
-            // Gross = Adjusted Gross (base salary + increments) + All Bonuses
-            $gross_with_bonuses = $adjusted_gross + $total_bonus_amount + $onetime_bonus_total;
+            // Calculate GROSS WITH BONUSES AND OVERTIME (for accurate payslip display)
+            // Gross = Adjusted Gross (base salary + increments) + All Bonuses + Overtime Pay
+            $gross_with_bonuses = $adjusted_gross + $total_bonus_amount + $onetime_bonus_total + $overtime_pay;
+            
+            // Add overtime to net pay (overtime is earnings)
+            $net_pay += $overtime_pay;
             
             $total_gross_run += $gross_with_bonuses;
             $total_net_run += $net_pay;
@@ -588,7 +648,22 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                     'pension_employee' => $pension_emp,
                     'pension_employer' => $pension_emplr,
                     'nhis' => $nhis,
-                    'nhf' => $nhf
+                    'nhis_employer' => $nhis_employer,
+                    'nhf' => $nhf,
+                    'taxable_income' => [
+                        'adjusted_gross' => $adjusted_gross,
+                        'taxable_bonuses' => $taxable_bonus_total,
+                        'taxable_onetime_bonuses' => $onetime_taxable_bonus,
+                        'overtime_pay' => $overtime_pay,
+                        'total_taxable_income' => $adjusted_gross + $taxable_bonus_total + $onetime_taxable_bonus + $overtime_pay,
+                        'note' => 'Per PIT Act - Bonuses and overtime are taxable but NOT pensionable'
+                    ]
+                ],
+                'overtime' => [
+                    'hours' => $overtime_hours,
+                    'amount' => $overtime_pay,
+                    'notes' => $overtime_notes,
+                    'rate_multiplier' => isset($settings['overtime_rate']) ? $settings['overtime_rate'] : 1.5
                 ],
                 'loans' => $loan_deductions,
                 'attendance' => ['deduction' => $attendance_deduction],

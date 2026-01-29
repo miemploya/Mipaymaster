@@ -47,6 +47,80 @@ try {
     $stmt->execute([$company_id]);
     $policy = $stmt->fetch(PDO::FETCH_ASSOC);
 
+    // DUAL MODE SUPPORT: Determine employee's attendance mode
+    $attendance_mode = 'daily'; // Default to daily
+    $shift_id = null;
+    $day_schedule = null; // Will hold check_in, check_out, grace for today
+    
+    // Check if employee has a specific assignment
+    $stmt = $pdo->prepare("
+        SELECT attendance_mode, shift_id 
+        FROM employee_attendance_assignments 
+        WHERE employee_id = ? AND is_active = 1
+    ");
+    $stmt->execute([$employee_id]);
+    $assignment = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($assignment) {
+        $attendance_mode = $assignment['attendance_mode'];
+        $shift_id = $assignment['shift_id'];
+    } else {
+        // Use company's default mode
+        $attendance_mode = $policy['default_mode'] ?? 'daily';
+    }
+    
+    // Get today's schedule based on mode
+    $day_of_week = date('w'); // 0=Sunday, 6=Saturday
+    $day_keys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    $today_key = $day_keys[$day_of_week];
+    
+    if ($attendance_mode === 'shift' && $shift_id) {
+        // SHIFT MODE: Get schedule from shift_schedules table
+        $stmt = $pdo->prepare("
+            SELECT is_working_day, check_in_time, check_out_time, grace_period_minutes
+            FROM attendance_shift_schedules 
+            WHERE shift_id = ? AND day_of_week = ?
+        ");
+        $stmt->execute([$shift_id, $day_of_week]);
+        $shift_sched = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($shift_sched && $shift_sched['is_working_day']) {
+            $day_schedule = [
+                'enabled' => true,
+                'check_in' => $shift_sched['check_in_time'],
+                'check_out' => $shift_sched['check_out_time'],
+                'grace' => intval($shift_sched['grace_period_minutes'] ?? 15)
+            ];
+        } else {
+            // Not a working day for this shift
+            $day_schedule = ['enabled' => false];
+        }
+    } else {
+        // DAILY MODE: Get per-day schedule from attendance_policies
+        $enabled_col = $today_key . '_enabled';
+        $checkin_col = $today_key . '_check_in';
+        $checkout_col = $today_key . '_check_out';
+        $grace_col = $today_key . '_grace';
+        
+        // Check if per-day columns exist, fallback to global policy settings
+        if (isset($policy[$enabled_col])) {
+            $day_schedule = [
+                'enabled' => (bool)$policy[$enabled_col],
+                'check_in' => $policy[$checkin_col] ?? $policy['check_in_start'],
+                'check_out' => $policy[$checkout_col] ?? $policy['check_out_end'],
+                'grace' => intval($policy[$grace_col] ?? $policy['grace_period_minutes'] ?? 15)
+            ];
+        } else {
+            // Fallback to global policy settings
+            $day_schedule = [
+                'enabled' => true,
+                'check_in' => $policy['check_in_start'] ?? '08:00:00',
+                'check_out' => $policy['check_out_end'] ?? '17:00:00',
+                'grace' => intval($policy['grace_period_minutes'] ?? 15)
+            ];
+        }
+    }
+
     // 3. Process Logic
     $today = date('Y-m-d');
     $now = date('H:i:s');
@@ -60,6 +134,7 @@ try {
 
     if ($type === 'in') {
         // AUTO-CLOSE STALE SESSIONS: Close any unclosed sessions from previous days
+        $auto_close_time = $day_schedule['check_out'] ?? $policy['check_out_end'] ?? '18:00:00';
         $stmt_stale = $pdo->prepare("
             SELECT id, date, check_in_time 
             FROM attendance_logs 
@@ -72,7 +147,7 @@ try {
         
         foreach ($stale_sessions as $stale) {
             // Auto-close with policy's check_out_end or end of that day
-            $auto_checkout_time = $stale['date'] . ' ' . ($policy['check_out_end'] ?? '18:00:00');
+            $auto_checkout_time = $stale['date'] . ' ' . $auto_close_time;
             
             $stmt_close = $pdo->prepare("
                 UPDATE attendance_logs 
@@ -90,22 +165,26 @@ try {
             
             // Audit log for auto-close
             log_audit($company_id, $user_id, 'AUTO_CLOSE_ATTENDANCE', 
-                "Auto-closed missed checkout for {$stale['date']}. Check-out set to: " . ($policy['check_out_end'] ?? '18:00'));
+                "Auto-closed missed checkout for {$stale['date']}. Check-out set to: " . $auto_close_time);
         }
         
         if ($log) {
             throw new Exception("You have already clocked in today.");
         }
 
+        // Check if today is a working day
+        if (!$day_schedule['enabled']) {
+            throw new Exception("Today is not a working day according to your schedule.");
+        }
 
-        // Lateness Calculation Logic
+        // Lateness Calculation Logic using day-specific schedule
         $late_minutes = 0;
         $auto_deduction = 0;
         
-        if ($policy && !empty($policy['check_in_start'])) {
-            // Calculate expected check-in time (check_in_start + grace_period)
-            $grace = intval($policy['grace_period_minutes'] ?? 0);
-            $expected_time = strtotime($policy['check_in_start']) + ($grace * 60);
+        if ($day_schedule && !empty($day_schedule['check_in'])) {
+            // Calculate expected check-in time (check_in + grace_period)
+            $grace = $day_schedule['grace'];
+            $expected_time = strtotime($day_schedule['check_in']) + ($grace * 60);
             $current_time = strtotime($now);
             
             // If current time is after expected time (including grace), employee is late

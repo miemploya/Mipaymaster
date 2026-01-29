@@ -162,6 +162,30 @@ try {
                     { date: 'Jan 14, 05:15 PM', action: 'Update Record', user: 'Admin', target: 'Jane Smith', details: 'Changed status Late -> Present' },
                 ],
 
+                // SHIFT MANAGEMENT
+                shifts: [],
+                shiftsLoading: false,
+                showShiftModal: false,
+                showAssignModal: false,
+                shiftForm: {
+                    id: null,
+                    name: '',
+                    description: '',
+                    schedules: {
+                        sun: { enabled: false, check_in: '09:00', check_out: '17:00', grace: 15 },
+                        mon: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                        tue: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                        wed: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                        thu: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                        fri: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                        sat: { enabled: false, check_in: '09:00', check_out: '13:00', grace: 15 }
+                    }
+                },
+                selectedShift: null,
+                unassignedEmployees: [],
+                assignedEmployees: [],
+                selectedEmployeeIds: [],
+
                 init() {
                     // Safe access to lucide
                     this.$watch('currentTab', () => {
@@ -248,6 +272,203 @@ try {
                         alert(data.message || 'Done');
                         if (data.status) this.loadFlagged(); // Refresh
                     } catch (e) { console.error('Failed to mark absent:', e); alert('Error marking absences'); }
+                },
+
+                // SHIFT MANAGEMENT METHODS
+                async loadShifts() {
+                    this.shiftsLoading = true;
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'list' })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.shifts = data.data;
+                        }
+                    } catch (e) { console.error('Failed to load shifts:', e); }
+                    this.shiftsLoading = false;
+                    setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
+                },
+
+                openShiftModal(shift = null) {
+                    if (shift) {
+                        // Edit existing shift - map schedules from array to object
+                        this.shiftForm.id = shift.id;
+                        this.shiftForm.name = shift.name;
+                        this.shiftForm.description = shift.description || '';
+                        
+                        // Map schedules array to object format
+                        const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                        if (shift.schedules) {
+                            shift.schedules.forEach(s => {
+                                const dayKey = dayNames[s.day_of_week];
+                                if (dayKey) {
+                                    this.shiftForm.schedules[dayKey] = {
+                                        enabled: s.is_working_day == 1,
+                                        check_in: s.check_in_time || '08:00',
+                                        check_out: s.check_out_time || '17:00',
+                                        grace: parseInt(s.grace_period_minutes) || 15
+                                    };
+                                }
+                            });
+                        }
+                    } else {
+                        this.resetShiftForm();
+                    }
+                    this.showShiftModal = true;
+                    setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
+                },
+
+                resetShiftForm() {
+                    this.shiftForm = {
+                        id: null,
+                        name: '',
+                        description: '',
+                        schedules: {
+                            sun: { enabled: false, check_in: '09:00', check_out: '17:00', grace: 15 },
+                            mon: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                            tue: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                            wed: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                            thu: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                            fri: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
+                            sat: { enabled: false, check_in: '09:00', check_out: '13:00', grace: 15 }
+                        }
+                    };
+                },
+
+                async saveShift() {
+                    if (!this.shiftForm.name.trim()) {
+                        alert('Shift name is required');
+                        return;
+                    }
+                    
+                    const action = this.shiftForm.id ? 'update' : 'create';
+                    const payload = {
+                        action: action,
+                        shift_id: this.shiftForm.id,
+                        name: this.shiftForm.name,
+                        description: this.shiftForm.description,
+                        schedules: this.shiftForm.schedules
+                    };
+
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.showShiftModal = false;
+                            this.loadShifts();
+                            alert(data.message || 'Shift saved successfully');
+                        } else {
+                            alert(data.message || 'Failed to save shift');
+                        }
+                    } catch (e) { console.error('Failed to save shift:', e); alert('Error saving shift'); }
+                },
+
+                async deleteShift(shiftId) {
+                    if (!confirm('Delete this shift? All assigned employees will be unassigned.')) return;
+                    
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'delete', shift_id: shiftId })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.loadShifts();
+                            alert(data.message || 'Shift deleted');
+                        } else {
+                            alert(data.message || 'Failed to delete shift');
+                        }
+                    } catch (e) { console.error('Failed to delete shift:', e); alert('Error deleting shift'); }
+                },
+
+                async openAssignModal(shift) {
+                    this.selectedShift = shift;
+                    this.selectedEmployeeIds = [];
+                    
+                    try {
+                        // Load shift details with employees
+                        const res1 = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_shift', shift_id: shift.id })
+                        });
+                        const data1 = await res1.json();
+                        if (data1.status) {
+                            this.assignedEmployees = data1.data.employees || [];
+                        }
+
+                        // Load unassigned employees
+                        const res2 = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_unassigned_employees' })
+                        });
+                        const data2 = await res2.json();
+                        if (data2.status) {
+                            this.unassignedEmployees = data2.data || [];
+                        }
+                    } catch (e) { console.error('Failed to load assignment data:', e); }
+                    
+                    this.showAssignModal = true;
+                    setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
+                },
+
+                async saveAssignments() {
+                    if (!this.selectedShift) return;
+                    
+                    // Combine currently assigned IDs with newly selected IDs
+                    const existingIds = this.assignedEmployees.map(e => e.id);
+                    const allIds = [...new Set([...existingIds, ...this.selectedEmployeeIds])];
+                    
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                action: 'assign_employees', 
+                                shift_id: this.selectedShift.id,
+                                employee_ids: allIds
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.showAssignModal = false;
+                            this.loadShifts();
+                            alert(data.message || 'Employees assigned');
+                        } else {
+                            alert(data.message || 'Failed to assign employees');
+                        }
+                    } catch (e) { console.error('Failed to assign employees:', e); alert('Error assigning employees'); }
+                },
+
+                async removeFromShift(employeeId) {
+                    if (!confirm('Remove this employee from the shift?')) return;
+                    
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'remove_from_shift', employee_id: employeeId })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            // Refresh the assign modal
+                            if (this.selectedShift) {
+                                this.openAssignModal(this.selectedShift);
+                            }
+                            this.loadShifts();
+                        } else {
+                            alert(data.message || 'Failed to remove employee');
+                        }
+                    } catch (e) { console.error('Failed to remove employee:', e); alert('Error removing employee'); }
                 }
             }
         }
@@ -363,6 +584,11 @@ try {
                         :class="currentTab === 'biometrics' ? 'border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400 bg-brand-50/10' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:border-slate-300'" 
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
                         <i data-lucide="fingerprint" class="w-4 h-4"></i> Biometrics
+                    </button>
+                    <button @click="currentTab = 'shifts'; loadShifts()" 
+                        :class="currentTab === 'shifts' ? 'border-purple-600 text-purple-600 dark:text-purple-400 dark:border-purple-400 bg-purple-50/10' : 'border-transparent text-slate-500 hover:text-purple-600 dark:text-slate-400 dark:hover:text-purple-400 hover:border-purple-300'" 
+                        class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all duration-200 whitespace-nowrap cursor-pointer">
+                        <i data-lucide="users-round" class="w-4 h-4"></i> Shifts
                     </button>
                     <a href="company.php?tab=attendance" 
                         class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-brand-600 dark:text-slate-400 dark:hover:text-brand-400 hover:border-brand-300 transition-all duration-200 whitespace-nowrap cursor-pointer">
@@ -687,11 +913,232 @@ try {
                     </div>
                 </div>
 
+                <!-- TAB 6: SHIFTS MANAGEMENT -->
+                <div x-show="currentTab === 'shifts'" x-cloak x-transition.opacity>
+                    <!-- Header -->
+                    <div class="flex justify-between items-center mb-6">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900 dark:text-white">Shift Management</h2>
+                            <p class="text-sm text-slate-500">Create and manage attendance shifts, assign employees to specific work schedules.</p>
+                        </div>
+                        <button @click="openShiftModal()" class="px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-bold shadow-md transition-colors flex items-center gap-2">
+                            <i data-lucide="plus" class="w-4 h-4"></i> Create Shift
+                        </button>
+                    </div>
+
+                    <!-- Loading State -->
+                    <div x-show="shiftsLoading" class="text-center py-12">
+                        <div class="inline-block animate-spin w-8 h-8 border-4 border-purple-200 border-t-purple-600 rounded-full"></div>
+                        <p class="mt-3 text-slate-500">Loading shifts...</p>
+                    </div>
+
+                    <!-- Empty State -->
+                    <div x-show="!shiftsLoading && shifts.length === 0" class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center">
+                        <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                            <i data-lucide="users-round" class="w-8 h-8 text-purple-500"></i>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-2">No Shifts Created</h3>
+                        <p class="text-sm text-slate-500 mb-6">Create your first shift to start assigning employees to specific work schedules.</p>
+                        <button @click="openShiftModal()" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-bold transition-colors">
+                            <i data-lucide="plus" class="w-4 h-4 inline mr-1"></i> Create First Shift
+                        </button>
+                    </div>
+
+                    <!-- Shifts Grid -->
+                    <div x-show="!shiftsLoading && shifts.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <template x-for="shift in shifts" :key="shift.id">
+                            <div class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-lg transition-shadow">
+                                <!-- Header -->
+                                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                                    <div class="flex items-start justify-between">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                                                <i data-lucide="calendar-clock" class="w-5 h-5 text-purple-600"></i>
+                                            </div>
+                                            <div>
+                                                <h3 class="font-bold text-slate-900 dark:text-white" x-text="shift.name"></h3>
+                                                <p class="text-xs text-slate-500" x-text="shift.description || 'No description'"></p>
+                                            </div>
+                                        </div>
+                                        <div class="flex gap-1">
+                                            <button @click="openShiftModal(shift)" class="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-colors" title="Edit">
+                                                <i data-lucide="pencil" class="w-4 h-4"></i>
+                                            </button>
+                                            <button @click="deleteShift(shift.id)" class="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors" title="Delete">
+                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Schedule Preview -->
+                                <div class="p-4 bg-slate-50 dark:bg-slate-900/50">
+                                    <div class="flex flex-wrap gap-1.5 mb-4">
+                                        <template x-for="(dayLabel, dayIndex) in ['S', 'M', 'T', 'W', 'T', 'F', 'S']" :key="dayIndex">
+                                            <div :class="shift.schedules && shift.schedules[dayIndex] && shift.schedules[dayIndex].is_working_day == 1 ? 'bg-purple-600 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'" 
+                                                 class="w-7 h-7 rounded text-xs font-bold flex items-center justify-center" x-text="dayLabel">
+                                            </div>
+                                        </template>
+                                    </div>
+                                    
+                                    <!-- Employee Count -->
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                                            <i data-lucide="users" class="w-4 h-4"></i>
+                                            <span><span class="font-bold" x-text="shift.employee_count || 0"></span> Employees</span>
+                                        </div>
+                                        <button @click="openAssignModal(shift)" class="text-xs text-purple-600 hover:underline font-medium">
+                                            Manage Staff
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
             </main>
         </div>
     <!-- Wrapper closing div removed -->
 
     <!-- MODALS -->
+    
+    <!-- Shift Create/Edit Modal -->
+    <div x-show="showShiftModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div @click.outside="showShiftModal = false" class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl border border-slate-200 dark:border-slate-800 overflow-hidden max-h-[90vh] flex flex-col">
+            <div class="flex justify-between items-center p-6 border-b border-slate-100 dark:border-slate-800 bg-purple-50 dark:bg-purple-900/20">
+                <div>
+                    <h3 class="text-xl font-bold text-slate-900 dark:text-white" x-text="shiftForm.id ? 'Edit Shift' : 'Create New Shift'"></h3>
+                    <p class="text-xs text-slate-500">Configure shift details and weekly schedule</p>
+                </div>
+                <button @click="showShiftModal = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i data-lucide="x" class="w-6 h-6"></i></button>
+            </div>
+            
+            <div class="p-6 space-y-6 overflow-y-auto flex-1">
+                <!-- Shift Name & Description -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="form-label">Shift Name *</label>
+                        <input type="text" x-model="shiftForm.name" class="form-input" placeholder="e.g. Morning Shift">
+                    </div>
+                    <div>
+                        <label class="form-label">Description</label>
+                        <input type="text" x-model="shiftForm.description" class="form-input" placeholder="e.g. 8AM - 5PM weekdays">
+                    </div>
+                </div>
+                
+                <!-- Schedule Table -->
+                <div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3">Weekly Schedule</h4>
+                    <div class="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl">
+                        <table class="w-full text-sm">
+                            <thead class="bg-slate-50 dark:bg-slate-800">
+                                <tr>
+                                    <th class="px-4 py-3 text-left font-medium text-slate-600 dark:text-slate-400">Day</th>
+                                    <th class="px-4 py-3 text-center font-medium text-slate-600 dark:text-slate-400">Working</th>
+                                    <th class="px-4 py-3 text-center font-medium text-slate-600 dark:text-slate-400">Check-In</th>
+                                    <th class="px-4 py-3 text-center font-medium text-slate-600 dark:text-slate-400">Check-Out</th>
+                                    <th class="px-4 py-3 text-center font-medium text-slate-600 dark:text-slate-400">Grace</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                <template x-for="(dayName, dayKey) in {sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday'}" :key="dayKey">
+                                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                                        <td class="px-4 py-3 font-medium text-slate-700 dark:text-slate-300" x-text="dayName"></td>
+                                        <td class="px-4 py-3 text-center">
+                                            <input type="checkbox" x-model="shiftForm.schedules[dayKey].enabled" class="w-5 h-5 text-purple-600 rounded focus:ring-purple-500">
+                                        </td>
+                                        <td class="px-4 py-3 text-center">
+                                            <input type="time" x-model="shiftForm.schedules[dayKey].check_in" :disabled="!shiftForm.schedules[dayKey].enabled" class="form-input w-28 text-center text-sm disabled:opacity-50">
+                                        </td>
+                                        <td class="px-4 py-3 text-center">
+                                            <input type="time" x-model="shiftForm.schedules[dayKey].check_out" :disabled="!shiftForm.schedules[dayKey].enabled" class="form-input w-28 text-center text-sm disabled:opacity-50">
+                                        </td>
+                                        <td class="px-4 py-3 text-center">
+                                            <input type="number" x-model="shiftForm.schedules[dayKey].grace" :disabled="!shiftForm.schedules[dayKey].enabled" min="0" class="form-input w-16 text-center text-sm disabled:opacity-50" placeholder="15">
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3">
+                <button @click="showShiftModal = false" class="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-sm font-medium">Cancel</button>
+                <button @click="saveShift()" class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-bold transition-colors flex items-center gap-2">
+                    <i data-lucide="save" class="w-4 h-4"></i> Save Shift
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Employee Assignment Modal -->
+    <div x-show="showAssignModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div @click.outside="showAssignModal = false" class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-xl border border-slate-200 dark:border-slate-800 overflow-hidden max-h-[85vh] flex flex-col">
+            <div class="flex justify-between items-center p-6 border-b border-slate-100 dark:border-slate-800 bg-purple-50 dark:bg-purple-900/20">
+                <div>
+                    <h3 class="text-xl font-bold text-slate-900 dark:text-white">Assign Employees</h3>
+                    <p class="text-sm text-slate-500" x-text="selectedShift ? 'to ' + selectedShift.name : ''"></p>
+                </div>
+                <button @click="showAssignModal = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i data-lucide="x" class="w-6 h-6"></i></button>
+            </div>
+            
+            <div class="p-6 space-y-4 overflow-y-auto flex-1">
+                <!-- Currently Assigned -->
+                <div x-show="assignedEmployees.length > 0">
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
+                        <i data-lucide="check-circle-2" class="w-4 h-4 text-green-500"></i> Currently Assigned
+                    </h4>
+                    <div class="space-y-2 max-h-40 overflow-y-auto">
+                        <template x-for="emp in assignedEmployees" :key="emp.id">
+                            <div class="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                                <div>
+                                    <span class="font-medium text-slate-900 dark:text-white" x-text="emp.first_name + ' ' + emp.last_name"></span>
+                                    <span class="text-xs text-slate-500 ml-2" x-text="emp.payroll_id"></span>
+                                </div>
+                                <button @click="removeFromShift(emp.id)" class="text-xs text-red-600 hover:underline">Remove</button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Available Employees -->
+                <div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
+                        <i data-lucide="user-plus" class="w-4 h-4 text-purple-500"></i> Available Employees
+                    </h4>
+                    <div x-show="unassignedEmployees.length === 0" class="text-center py-6 text-slate-500 text-sm">
+                        All employees are already assigned to shifts.
+                    </div>
+                    <div x-show="unassignedEmployees.length > 0" class="space-y-2 max-h-60 overflow-y-auto">
+                        <template x-for="emp in unassignedEmployees" :key="emp.id">
+                            <label class="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-purple-400 transition-colors"
+                                   :class="{'border-purple-500 bg-purple-50 dark:bg-purple-900/20': selectedEmployeeIds.includes(emp.id)}">
+                                <input type="checkbox" :value="emp.id" x-model="selectedEmployeeIds" class="w-5 h-5 text-purple-600 rounded focus:ring-purple-500">
+                                <div class="flex-1">
+                                    <span class="font-medium text-slate-900 dark:text-white" x-text="emp.first_name + ' ' + emp.last_name"></span>
+                                    <span class="text-xs text-slate-500 ml-2" x-text="emp.payroll_id"></span>
+                                    <span x-show="emp.department" class="block text-xs text-slate-400" x-text="emp.department"></span>
+                                </div>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center">
+                <span class="text-sm text-slate-500" x-text="selectedEmployeeIds.length + ' selected'"></span>
+                <div class="flex gap-3">
+                    <button @click="showAssignModal = false" class="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-sm font-medium">Cancel</button>
+                    <button @click="saveAssignments()" :disabled="selectedEmployeeIds.length === 0" class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-bold transition-colors flex items-center gap-2">
+                        <i data-lucide="user-check" class="w-4 h-4"></i> Assign Selected
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
     
     <!-- Modern Manual Entry Modal -->
     <div x-show="showManualModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">

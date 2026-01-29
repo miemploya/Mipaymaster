@@ -491,6 +491,24 @@ foreach ($employees_raw as $emp) {
     $stmt->execute([$emp['id']]);
     $emp['loans'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
+    // Salary Breakdown - Fetch from category_breakdown table
+    $emp['salary_breakdown'] = [];
+    if (!empty($emp['salary_category_id'])) {
+        $stmt = $pdo->prepare("
+            SELECT sc.name as component_name, scb.percentage 
+            FROM salary_category_breakdown scb 
+            JOIN salary_components sc ON scb.salary_component_id = sc.id 
+            WHERE scb.category_id = ? 
+            ORDER BY 
+                CASE WHEN sc.name = 'Basic Salary' THEN 1 
+                     WHEN sc.name = 'Housing Allowance' THEN 2 
+                     WHEN sc.name = 'Transport Allowance' THEN 3 
+                     ELSE 4 END
+        ");
+        $stmt->execute([$emp['salary_category_id']]);
+        $emp['salary_breakdown'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    
     // Normalize Logic
     $emp['status'] = ucfirst($emp['status'] ?? 'Active');
     $emp['department'] = $emp['department'] ?? 'General';
@@ -524,6 +542,7 @@ foreach ($js_employees as &$emp) {
     if (!isset($emp['guarantors'])) $emp['guarantors'] = [];
     if (!isset($emp['additional_qualifications'])) $emp['additional_qualifications'] = [];
     if (!isset($emp['loans'])) $emp['loans'] = [];
+    if (!isset($emp['salary_breakdown'])) $emp['salary_breakdown'] = [];
 }
 unset($emp);
 ?>
@@ -1627,20 +1646,19 @@ unset($emp);
                                     <p class="text-slate-500 uppercase text-xs font-bold tracking-widest">Base Annual Gross Salary</p>
                                     
                                     <div class="mt-8 p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
-                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-4">Salary Breakdown (Estimates)</h4>
+                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-4">Salary Breakdown <span class="text-xs font-normal text-slate-400" x-text="'(' + (selectedEmployee?.category || 'Category') + ')'"></span></h4>
                                         <div class="space-y-3">
-                                            <div class="flex justify-between text-sm">
-                                                <span class="text-slate-500">Basic Salary</span>
-                                                <span class="font-mono text-slate-900 dark:text-white">~40%</span>
-                                            </div>
-                                            <div class="flex justify-between text-sm">
-                                                <span class="text-slate-500">Housing Allowance</span>
-                                                <span class="font-mono text-slate-900 dark:text-white">~30%</span>
-                                            </div>
-                                            <div class="flex justify-between text-sm">
-                                                <span class="text-slate-500">Transport Allowance</span>
-                                                <span class="font-mono text-slate-900 dark:text-white">~20%</span>
-                                            </div>
+                                            <template x-if="selectedEmployee?.salary_breakdown && selectedEmployee.salary_breakdown.length > 0">
+                                                <template x-for="component in selectedEmployee.salary_breakdown" :key="component.component_name">
+                                                    <div class="flex justify-between text-sm">
+                                                        <span class="text-slate-500" x-text="component.component_name"></span>
+                                                        <span class="font-mono text-slate-900 dark:text-white" x-text="parseFloat(component.percentage).toFixed(0) + '%'"></span>
+                                                    </div>
+                                                </template>
+                                            </template>
+                                            <template x-if="!selectedEmployee?.salary_breakdown || selectedEmployee.salary_breakdown.length === 0">
+                                                <p class="text-sm text-slate-400 italic">No breakdown defined for this category. Configure in Company Setup.</p>
+                                            </template>
                                         </div>
                                     </div>
                                     

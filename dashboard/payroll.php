@@ -34,6 +34,27 @@ $company_logo = $company_details['logo_url'] ?? '';
 $company_address = $company_details['address'] ?? '';
 $company_email = $company_details['email'] ?? '';
 $company_phone = $company_details['phone'] ?? '';
+
+// TAXABLE BONUSES - Per PIT (Personal Income Tax) Act, all bonuses are taxable
+$master_bonuses = [
+    "Performance Bonus", "Productivity Bonus", "Target Achievement Bonus", "KPI / Appraisal Bonus", 
+    "Efficiency Bonus", "Excellence Bonus", "Output-based Bonus",
+    "Service Charge Bonus", "Long-service Bonus", "Loyalty Bonus", "Retention Bonus", 
+    "End-of-year Service Bonus", "Contract Completion Bonus",
+    "13th-month Bonus", "Christmas / Festive Bonus", "Sallah / Easter / Holiday Bonus", 
+    "Anniversary Bonus", "Special Recognition Bonus",
+    "Sales Commission", "Profit-sharing Bonus", "Revenue Incentive Bonus", 
+    "Market Expansion Bonus", "Commission Override Bonus",
+    "Attendance Bonus", "Night-shift Bonus", "Weekend / Public Holiday Bonus", 
+    "Overtime Bonus", "Call-out / Standby Bonus",
+    "Management Bonus", "Supervisory Bonus", "Acting Allowance (Bonus)", 
+    "Responsibility Allowance (Cash)", "Leadership Bonus",
+    "Hazard Bonus", "Field-work Bonus", "Offshore / Site Bonus", 
+    "Relocation Bonus (Cash)", "Technical Skill Bonus",
+    "Discretionary Bonus", "Spot Bonus", "Project Completion Bonus", 
+    "Signing-on Bonus", "Ex-gratia Bonus",
+    "Others"
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -150,10 +171,33 @@ $company_phone = $company_details['phone'] ?? '';
                     employee_name: '',
                     type: 'bonus',
                     name: '',
+                    customName: '', // For 'Others' selection
                     amount: 0,
+                    taxable: true, // Default to taxable per PIT Act
                     notes: ''
                 },
                 adjustments: [],
+                masterBonuses: <?php echo json_encode($master_bonuses); ?>,
+                
+                // OVERTIME MODAL (NEW)
+                overtimeModalOpen: false,
+                overtimeForm: {
+                    employee_id: null,
+                    employee_name: '',
+                    hours: 0,
+                    notes: ''
+                },
+                overtimeConfig: {
+                    enabled: <?php 
+                        $stmt = $pdo->prepare("SELECT overtime_enabled, daily_work_hours, monthly_work_days, overtime_rate FROM statutory_settings WHERE company_id = ?");
+                        $stmt->execute([$company_id]);
+                        $ot_config = $stmt->fetch(PDO::FETCH_ASSOC);
+                        echo ($ot_config && $ot_config['overtime_enabled']) ? 'true' : 'false';
+                    ?>,
+                    dailyHours: <?php echo $ot_config['daily_work_hours'] ?? 8.00; ?>,
+                    monthlyDays: <?php echo $ot_config['monthly_work_days'] ?? 22; ?>,
+                    rate: <?php echo $ot_config['overtime_rate'] ?? 1.50; ?>
+                },
                 
                 // PAYSLIP MODAL
                 payslipModalOpen: false,
@@ -409,6 +453,62 @@ $company_phone = $company_details['phone'] ?? '';
                         if (data.status) {
                             alert('Adjustment added! Re-run payroll to apply.');
                             this.adjustmentModalOpen = false;
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                
+                // OVERTIME METHODS (NEW)
+                openOvertimeModal(emp) {
+                    if (!this.overtimeConfig.enabled) {
+                        alert('Overtime is not enabled. Please enable it in Company Setup → Statutory tab first.');
+                        return;
+                    }
+                    this.overtimeForm = {
+                        employee_id: emp.employee_id,
+                        employee_name: emp.first_name + ' ' + emp.last_name,
+                        hours: emp.breakdown.overtime_hours || 0,
+                        notes: emp.breakdown.overtime_notes || ''
+                    };
+                    this.overtimeModalOpen = true;
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                calculateOvertimePay(hours, grossSalary) {
+                    if (!hours || !grossSalary) return 0;
+                    const hourlyRate = grossSalary / (this.overtimeConfig.dailyHours * this.overtimeConfig.monthlyDays);
+                    return hours * hourlyRate * this.overtimeConfig.rate;
+                },
+                
+                async saveOvertime() {
+                    if (this.overtimeForm.hours < 0) {
+                        alert('Hours cannot be negative');
+                        return;
+                    }
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/payroll_operations.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                action: 'save_overtime',
+                                employee_id: this.overtimeForm.employee_id,
+                                hours: parseFloat(this.overtimeForm.hours) || 0,
+                                notes: this.overtimeForm.notes,
+                                month: this.currentPeriod.month,
+                                year: this.currentPeriod.year
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            alert('Overtime saved! Re-run payroll to apply.');
+                            this.overtimeModalOpen = false;
+                            this.fetchSheet(); // Refresh data
                         } else {
                             alert('Error: ' + data.message);
                         }
@@ -913,6 +1013,7 @@ $company_phone = $company_details['phone'] ?? '';
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Housing</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Transport</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-green-700 dark:text-green-400">Bonus</th>
+                                    <th class="bg-orange-50/50 dark:bg-orange-900/10 min-w-[80px] text-orange-600 dark:text-orange-400">OT</th>
                                     <th class="bg-slate-200 dark:bg-slate-800 min-w-[120px]">Gross Pay</th>
                                     
                                     <!-- Deductions Group -->
@@ -940,6 +1041,15 @@ $company_phone = $company_details['phone'] ?? '';
                                         <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.housing)"></td>
                                         <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.transport)"></td>
                                         <td class="bg-green-50/5 dark:bg-transparent text-green-600" x-text="formatCurrency(emp.breakdown.bonus || 0)"></td>
+                                        <!-- OT Column -->
+                                        <td class="bg-orange-50/10 dark:bg-transparent">
+                                            <div class="flex items-center gap-1">
+                                                <span x-show="(emp.breakdown.overtime_hours || 0) > 0" class="text-orange-600 font-medium" x-text="(emp.breakdown.overtime_hours || 0) + 'h'"></span>
+                                                <button @click="openOvertimeModal(emp)" class="px-1.5 py-0.5 text-[10px] bg-orange-100 text-orange-600 rounded hover:bg-orange-200 transition-colors" title="Add/Edit Overtime">
+                                                    <i data-lucide="clock" class="w-3 h-3 inline"></i>
+                                                </button>
+                                            </div>
+                                        </td>
                                         <td class="font-bold bg-slate-50 dark:bg-slate-900" x-text="formatCurrency(emp.gross_salary)"></td>
                                         
                                         <!-- Deductions -->
@@ -965,7 +1075,7 @@ $company_phone = $company_details['phone'] ?? '';
                                         </td>
                                     </tr>
                                 </template>
-                                <tr x-show="sheetData.length === 0">
+                                <tr x-show="sheetData.length === 0" class="empty-row">
                                     <td colspan="14" class="p-8 text-center text-slate-500 italic">No payroll data generated for this period. Run payroll to see entries.</td>
                                 </tr>
                             </tbody>
@@ -1002,14 +1112,65 @@ $company_phone = $company_details['phone'] ?? '';
                                     </div>
                                 </div>
                                 
-                                <div>
+                                <div x-show="adjustmentForm.type === 'bonus'">
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Select Bonus Type</label>
+                                    <div class="relative">
+                                        <select x-model="adjustmentForm.name" @change="if(adjustmentForm.name === 'Others') adjustmentForm.customName = ''" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm">
+                                            <option value="">-- Select a bonus type --</option>
+                                            <optgroup label="Performance & Productivity">
+                                                <template x-for="bonus in masterBonuses.slice(0, 7)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Service-Related">
+                                                <template x-for="bonus in masterBonuses.slice(7, 13)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Time-Based & Special Occasion">
+                                                <template x-for="bonus in masterBonuses.slice(13, 18)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Sales, Revenue & Commission">
+                                                <template x-for="bonus in masterBonuses.slice(18, 23)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Attendance, Shift & Work-Condition">
+                                                <template x-for="bonus in masterBonuses.slice(23, 28)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Management & Responsibility">
+                                                <template x-for="bonus in masterBonuses.slice(28, 33)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Risk, Skill & Location">
+                                                <template x-for="bonus in masterBonuses.slice(33, 38)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                            <optgroup label="Special One-Off & Discretionary">
+                                                <template x-for="bonus in masterBonuses.slice(38)"><option :value="bonus" x-text="bonus"></option></template>
+                                            </optgroup>
+                                        </select>
+                                    </div>
+                                    <!-- Custom name input when 'Others' is selected -->
+                                    <div x-show="adjustmentForm.name === 'Others'" class="mt-2">
+                                        <input type="text" x-model="adjustmentForm.customName" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="Enter custom bonus name...">
+                                    </div>
+                                </div>
+                                
+                                <div x-show="adjustmentForm.type === 'deduction'">
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Name/Description</label>
-                                    <input type="text" x-model="adjustmentForm.name" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="e.g. Performance Bonus, Overtime Pay">
+                                    <input type="text" x-model="adjustmentForm.name" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="e.g. Loan Repayment, Salary Advance">
                                 </div>
                                 
                                 <div>
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Amount (₦)</label>
                                     <input type="number" x-model="adjustmentForm.amount" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="0.00" step="100">
+                                </div>
+                                
+                                <!-- Taxable Checkbox with PIT Notice -->
+                                <div x-show="adjustmentForm.type === 'bonus'" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                                    <label class="flex items-start gap-3 cursor-pointer">
+                                        <input type="checkbox" x-model="adjustmentForm.taxable" class="mt-0.5 text-amber-600 rounded" checked>
+                                        <div>
+                                            <span class="text-sm font-medium text-slate-800 dark:text-slate-200">Taxable Bonus</span>
+                                            <p class="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                                                <i data-lucide="info" class="w-3 h-3 inline"></i>
+                                                Per PIT Act, all bonuses are taxable income. Only uncheck if you have verified tax exemption.
+                                            </p>
+                                        </div>
+                                    </label>
                                 </div>
                                 
                                 <div>
@@ -1024,6 +1185,72 @@ $company_phone = $company_details['phone'] ?? '';
                                     <span x-show="loading">Saving...</span>
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- OVERTIME MODAL (NEW) -->
+                <div x-show="overtimeModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+                    <div class="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" @click="overtimeModalOpen = false"></div>
+                    <div class="relative bg-white dark:bg-slate-950 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" @click.stop>
+                        <div class="px-6 py-4 border-b border-orange-100 dark:border-orange-900/30 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 flex items-center justify-center bg-orange-100 dark:bg-orange-900/50 rounded-xl text-orange-600">
+                                    <i data-lucide="clock" class="w-5 h-5"></i>
+                                </div>
+                                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Overtime Entry</h3>
+                            </div>
+                            <button @click="overtimeModalOpen = false" class="text-slate-400 hover:text-slate-600">
+                                <i data-lucide="x" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+                        <div class="p-6 space-y-4">
+                            <div class="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg">
+                                <p class="text-xs text-slate-500">Employee</p>
+                                <p class="font-bold text-slate-900 dark:text-white" x-text="overtimeForm.employee_name"></p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Overtime Hours</label>
+                                <div class="relative">
+                                    <input type="number" x-model="overtimeForm.hours" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 pr-12 text-sm" placeholder="0.0" step="0.5" min="0">
+                                    <span class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-medium">hours</span>
+                                </div>
+                            </div>
+                            
+                            <!-- OT Pay Preview -->
+                            <div class="p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800/50">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="text-xs text-slate-600 dark:text-slate-400">OT Rate:</span>
+                                    <span class="text-xs font-bold text-orange-600" x-text="overtimeConfig.rate + 'x normal rate'"></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Estimated OT Pay:</span>
+                                    <span class="text-lg font-bold text-orange-600" x-text="formatCurrency(calculateOvertimePay(overtimeForm.hours, sheetData.find(e => e.employee_id === overtimeForm.employee_id)?.gross_salary || 0))"></span>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Notes (Optional)</label>
+                                <textarea x-model="overtimeForm.notes" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" rows="2" placeholder="e.g. Weekend work, project deadline..."></textarea>
+                            </div>
+                            
+                            <!-- PIT Tax Notice -->
+                            <div class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                                <div class="flex items-start gap-2">
+                                    <i data-lucide="info" class="w-4 h-4 text-amber-600 mt-0.5 shrink-0"></i>
+                                    <p class="text-xs text-amber-700 dark:text-amber-400">
+                                        <strong>Tax Notice:</strong> Per PIT Act, overtime pay is taxable income and will be included in PAYE calculation.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3">
+                            <button @click="overtimeModalOpen = false" class="px-4 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
+                            <button @click="saveOvertime()" :disabled="loading" class="px-4 py-2 bg-orange-500 text-white text-sm font-bold rounded-lg hover:bg-orange-600 disabled:opacity-50">
+                                <span x-show="!loading">Save Overtime</span>
+                                <span x-show="loading">Saving...</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1389,6 +1616,13 @@ $company_phone = $company_details['phone'] ?? '';
                                                 <div class="line-item bonus">
                                                     <span class="line-item-name" x-text="bonus.name"></span>
                                                     <span class="line-item-amount" x-text="formatCurrency(bonus.amount)"></span>
+                                                </div>
+                                            </template>
+                                            <!-- Overtime Pay (NEW) -->
+                                            <template x-if="(selectedEmployee?.breakdown?.overtime_pay || 0) > 0">
+                                                <div class="line-item bonus">
+                                                    <span class="line-item-name">Overtime Pay <small style="color:#666;">(<span x-text="selectedEmployee?.breakdown?.overtime_hours || 0"></span>h)</small></span>
+                                                    <span class="line-item-amount" x-text="formatCurrency(selectedEmployee?.breakdown?.overtime_pay || 0)"></span>
                                                 </div>
                                             </template>
                                             <div class="line-item total">

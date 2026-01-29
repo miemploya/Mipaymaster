@@ -98,6 +98,75 @@ $rejected_loans = array_filter($all_loans, fn($l) => $l['status'] === 'rejected'
 $total_loan_balance = array_sum(array_column($approved_loans, 'balance'));
 $total_monthly_repayment = array_sum(array_column($approved_loans, 'repayment_amount'));
 
+// 9. Fetch Today's Schedule (Shift or Daily Mode)
+$day_of_week = date('w'); // 0=Sunday, 6=Saturday
+$day_keys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+$today_key = $day_keys[$day_of_week];
+
+$employee_schedule = [
+    'mode' => 'daily',
+    'shift_name' => null,
+    'is_working_day' => true,
+    'expected_in' => '08:00',
+    'expected_out' => '17:00',
+    'grace' => 15
+];
+
+// Check if employee has a specific assignment
+$stmt = $pdo->prepare("
+    SELECT ea.attendance_mode, ea.shift_id, s.name as shift_name
+    FROM employee_attendance_assignments ea
+    LEFT JOIN attendance_shifts s ON ea.shift_id = s.id
+    WHERE ea.employee_id = ? AND ea.is_active = 1
+");
+$stmt->execute([$employee_id]);
+$emp_assignment = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// Fetch company attendance policy
+$stmt = $pdo->prepare("SELECT * FROM attendance_policies WHERE company_id = ?");
+$stmt->execute([$company_id]);
+$att_policy = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if ($emp_assignment && $emp_assignment['attendance_mode'] === 'shift' && $emp_assignment['shift_id']) {
+    // SHIFT MODE: Get schedule from shift_schedules table
+    $employee_schedule['mode'] = 'shift';
+    $employee_schedule['shift_name'] = $emp_assignment['shift_name'];
+    
+    $stmt = $pdo->prepare("
+        SELECT is_working_day, check_in_time, check_out_time, grace_period_minutes
+        FROM attendance_shift_schedules 
+        WHERE shift_id = ? AND day_of_week = ?
+    ");
+    $stmt->execute([$emp_assignment['shift_id'], $day_of_week]);
+    $shift_sched = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($shift_sched) {
+        $employee_schedule['is_working_day'] = (bool)$shift_sched['is_working_day'];
+        $employee_schedule['expected_in'] = substr($shift_sched['check_in_time'] ?? '08:00', 0, 5);
+        $employee_schedule['expected_out'] = substr($shift_sched['check_out_time'] ?? '17:00', 0, 5);
+        $employee_schedule['grace'] = intval($shift_sched['grace_period_minutes'] ?? 15);
+    }
+} else {
+    // DAILY MODE: Get per-day schedule from attendance_policies
+    $employee_schedule['mode'] = $att_policy['default_mode'] ?? 'daily';
+    
+    $enabled_col = $today_key . '_enabled';
+    $checkin_col = $today_key . '_check_in';
+    $checkout_col = $today_key . '_check_out';
+    $grace_col = $today_key . '_grace';
+    
+    if ($att_policy && isset($att_policy[$enabled_col])) {
+        $employee_schedule['is_working_day'] = (bool)$att_policy[$enabled_col];
+        $employee_schedule['expected_in'] = substr($att_policy[$checkin_col] ?? $att_policy['check_in_start'] ?? '08:00', 0, 5);
+        $employee_schedule['expected_out'] = substr($att_policy[$checkout_col] ?? $att_policy['check_out_end'] ?? '17:00', 0, 5);
+        $employee_schedule['grace'] = intval($att_policy[$grace_col] ?? $att_policy['grace_period_minutes'] ?? 15);
+    } elseif ($att_policy) {
+        // Fallback to global policy settings
+        $employee_schedule['expected_in'] = substr($att_policy['check_in_start'] ?? '08:00', 0, 5);
+        $employee_schedule['expected_out'] = substr($att_policy['check_out_end'] ?? '17:00', 0, 5);
+        $employee_schedule['grace'] = intval($att_policy['grace_period_minutes'] ?? 15);
+    }
+}
 
 ?>
 <!DOCTYPE html>
@@ -141,7 +210,7 @@ $total_monthly_repayment = array_sum(array_column($approved_loans, 'repayment_am
                 <div class="text-right hidden sm:block">
                     <p class="text-sm font-bold text-slate-900 dark:text-white"><?php echo htmlspecialchars($employee['first_name'] . ' ' . $employee['last_name']); ?></p>
                     <p class="text-xs text-slate-500"><?php echo htmlspecialchars($employee['job_title']); ?></p>
-                    <p class="text-xs text-brand-600 dark:text-brand-400 font-medium"><?php echo htmlspecialchars($category_name); ?></p>
+                    <p class="text-xs text-brand-600 dark:text-brand-400 font-medium"><?php echo htmlspecialchars($employee['payroll_id'] ?? 'N/A'); ?> • <?php echo htmlspecialchars($category_name); ?></p>
                 </div>
                 <div class="w-9 h-9 rounded-full bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center text-brand-600 dark:text-brand-400 font-bold">
                     <?php echo strtoupper(substr($employee['first_name'],0,1).substr($employee['last_name'],0,1)); ?>
@@ -168,16 +237,56 @@ $total_monthly_repayment = array_sum(array_column($approved_loans, 'repayment_am
                     <i data-lucide="clock" class="w-24 h-24 text-brand-600"></i>
                 </div>
                 
-                <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-1">Time Clock</h3>
-                <p class="text-sm text-slate-500 mb-6" x-text="todayDate"></p>
+                <div class="flex justify-between items-start mb-1">
+                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">Time Clock</h3>
+                    <?php if ($employee_schedule['mode'] === 'shift' && $employee_schedule['shift_name']): ?>
+                    <span class="px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs font-bold rounded-full">
+                        <?php echo htmlspecialchars($employee_schedule['shift_name']); ?>
+                    </span>
+                    <?php else: ?>
+                    <span class="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-bold rounded-full">
+                        Daily Schedule
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <p class="text-sm text-slate-500 mb-4" x-text="todayDate"></p>
 
-                <div class="text-center mb-6">
+                <!-- Expected Times Info -->
+                <?php if ($employee_schedule['is_working_day']): ?>
+                <div class="flex justify-between items-center bg-slate-50 dark:bg-slate-900 rounded-lg px-3 py-2 text-xs mb-4">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="log-in" class="w-3.5 h-3.5 text-green-500"></i>
+                        <span class="text-slate-500">Expected In:</span>
+                        <span class="font-bold text-slate-700 dark:text-slate-300"><?php echo $employee_schedule['expected_in']; ?></span>
+                    </div>
+                    <div class="h-4 w-px bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="log-out" class="w-3.5 h-3.5 text-red-500"></i>
+                        <span class="text-slate-500">Expected Out:</span>
+                        <span class="font-bold text-slate-700 dark:text-slate-300"><?php echo $employee_schedule['expected_out']; ?></span>
+                    </div>
+                </div>
+                <p class="text-xs text-slate-400 text-center mb-4">Grace period: <?php echo $employee_schedule['grace']; ?> mins</p>
+                <?php else: ?>
+                <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 mb-4 text-center">
+                    <p class="text-sm font-medium text-amber-700 dark:text-amber-300">
+                        <i data-lucide="info" class="w-4 h-4 inline-block mr-1"></i>
+                        Today is not a scheduled working day
+                    </p>
+                </div>
+                <?php endif; ?>
+
+                <div class="text-center mb-4">
                     <div class="text-4xl font-mono font-bold text-slate-900 dark:text-white tracking-wider" x-text="currentTime"></div>
                 </div>
 
                 <!-- ACTIONS -->
                 <div class="space-y-3">
-                    <?php if (!$attendance): ?>
+                    <?php if (!$employee_schedule['is_working_day']): ?>
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl text-center text-sm text-slate-500">
+                            Clock-in is not available on non-working days
+                        </div>
+                    <?php elseif (!$attendance): ?>
                         <button @click="clockIn()" :disabled="loading" class="w-full py-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold shadow-lg shadow-brand-500/30 transition-all active:scale-95 flex items-center justify-center gap-2">
                             <i data-lucide="log-in" class="w-5 h-5"></i> <span x-text="loading ? 'Processing...' : 'Clock In'"></span>
                         </button>
@@ -266,6 +375,22 @@ $total_monthly_repayment = array_sum(array_column($approved_loans, 'repayment_am
                     <p class="text-sm text-rose-700 dark:text-rose-300 mb-2">Contact HR for support</p>
                     <p class="text-xs text-rose-500">Raise complaints, feedback, or inquiries</p>
                     <button @click="newCaseModalOpen = true" class="mt-4 text-xs font-bold text-rose-600 hover:underline">Submit a Case &rarr;</button>
+                 </div>
+                 
+                 <!-- ID Card -->
+                 <div class="bg-teal-50 dark:bg-teal-900/20 rounded-2xl p-6 border border-teal-100 dark:border-teal-900/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-3">
+                            <div class="p-2 bg-teal-100 dark:bg-teal-900/50 rounded-lg text-teal-600"><i data-lucide="id-card" class="w-5 h-5"></i></div>
+                            <h3 class="font-bold text-teal-900 dark:text-teal-100">My ID Card</h3>
+                        </div>
+                        <a href="../ajax/id_card_ajax.php?action=download&employee_id=<?php echo $employee_id; ?>" target="_blank" class="p-2 bg-teal-100 dark:bg-teal-900/50 rounded-lg text-teal-600 hover:bg-teal-200 dark:hover:bg-teal-800/50 transition-colors" title="Download ID Card">
+                            <i data-lucide="download" class="w-4 h-4"></i>
+                        </a>
+                    </div>
+                    <p class="text-sm text-teal-700 dark:text-teal-300 mb-2">Download your employee ID card</p>
+                    <p class="text-xs text-teal-500">Printable format with QR code</p>
+                    <a href="../ajax/id_card_ajax.php?action=download&employee_id=<?php echo $employee_id; ?>" target="_blank" class="mt-4 inline-block text-xs font-bold text-teal-600 hover:underline">Download ID Card &rarr;</a>
                  </div>
             </div>
         </div>

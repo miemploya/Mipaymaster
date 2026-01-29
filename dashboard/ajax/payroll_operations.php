@@ -184,7 +184,11 @@ try {
                 // Itemized arrays for payslip
                 'bonus_items' => $bonus_items,
                 'deduction_items' => $deduction_items,
-                'loan_items' => $loan_items
+                'loan_items' => $loan_items,
+                // Overtime data from payroll_overtime table
+                'overtime_hours' => floatval($snap['overtime']['hours'] ?? 0),
+                'overtime_pay' => floatval($snap['overtime']['amount'] ?? 0),
+                'overtime_notes' => $snap['overtime']['notes'] ?? ''
             ];
             unset($row['snapshot_json']); // Remove heavy json string
             $entries[] = $row;
@@ -240,6 +244,38 @@ try {
         $stmt->execute([$company_id, $employee_id, $month, $year, $type, $name, $amount, $notes, $user_id]);
         
         echo json_encode(['status' => true, 'message' => 'Adjustment saved. Re-run payroll to apply changes.']);
+    }
+    elseif ($action === 'save_overtime') {
+        // Save overtime hours for an employee for this payroll period
+        $employee_id = intval($input['employee_id']);
+        $hours = floatval($input['hours']);
+        $notes = trim($input['notes'] ?? '');
+        $month = intval($input['month']);
+        $year = intval($input['year']);
+        
+        if (!$employee_id) {
+            throw new Exception("Employee ID is required");
+        }
+        
+        // Check if overtime record exists for this period
+        $stmt = $pdo->prepare("SELECT id FROM payroll_overtime WHERE company_id = ? AND employee_id = ? AND payroll_month = ? AND payroll_year = ?");
+        $stmt->execute([$company_id, $employee_id, $month, $year]);
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($existing) {
+            // Update existing record
+            $stmt = $pdo->prepare("UPDATE payroll_overtime SET overtime_hours = ?, notes = ? WHERE id = ?");
+            $stmt->execute([$hours, $notes, $existing['id']]);
+        } else {
+            // Insert new record
+            $stmt = $pdo->prepare("
+                INSERT INTO payroll_overtime (company_id, employee_id, payroll_month, payroll_year, overtime_hours, notes, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([$company_id, $employee_id, $month, $year, $hours, $notes, $user_id]);
+        }
+        
+        echo json_encode(['status' => true, 'message' => 'Overtime saved. Re-run payroll to apply changes.']);
     }
     else {
         throw new Exception("Invalid Action");

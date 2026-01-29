@@ -25,6 +25,7 @@ $page_map = [
     'leaves' => 'leaves',
     'hr_performance' => 'performance',
     'hr_templates' => 'templates',
+    'id_cards' => 'id_cards',
 ];
 
 
@@ -144,7 +145,7 @@ function isActive($page_name, $current_page) {
             
             init() {
                 // Restore State
-                this.hrOpen = this.restore('hrOpen', <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates']) ? 'true' : 'false'; ?>);
+                this.hrOpen = this.restore('hrOpen', <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates', 'id_cards']) ? 'true' : 'false'; ?>);
                 this.payrollOpen = this.restore('payrollOpen', <?php echo in_array($current, ['payroll', 'increments', 'loans', 'attendance']) ? 'true' : 'false'; ?>);
                 this.financeOpen = this.restore('financeOpen', <?php echo in_array($current, ['wallet', 'tax_calculator', 'billing']) ? 'true' : 'false'; ?>);
                 this.adminOpen = this.restore('adminOpen', <?php echo in_array($current, ['users', 'settings', 'audit', 'support', 'reports']) ? 'true' : 'false'; ?>);
@@ -215,7 +216,7 @@ function isActive($page_name, $current_page) {
         </div>
 
         <!-- 3. HR MANAGEMENT (Group) -->
-        <button @click="hrOpen = !hrOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
+        <button @click="hrOpen = !hrOpen" class="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-lg transition-colors group border <?php echo in_array($current, ['recruitment', 'onboarding', 'leaves', 'relations', 'performance', 'templates', 'id_cards']) ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border-transparent'; ?>">
             <div class="flex items-center gap-3">
                 <i data-lucide="briefcase" class="w-5 h-5 text-rose-600 dark:text-rose-400 group-hover:scale-110 transition-transform"></i>
                 <span>Human Resources</span>
@@ -232,8 +233,11 @@ function isActive($page_name, $current_page) {
             <a href="leaves.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('leaves', $current); ?>">
                 <i data-lucide="calendar-off" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Leave Management
             </a>
-             <a href="hr_performance.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('performance', $current); ?>">
+            <a href="hr_performance.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('performance', $current); ?>">
                 <i data-lucide="bar-chart-2" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> Performance
+            </a>
+            <a href="id_cards.php" class="group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 hover:translate-x-1 hover:bg-rose-50 dark:hover:bg-rose-900/10 border <?php echo isActive('id_cards', $current); ?>">
+                <i data-lucide="id-card" class="w-4 h-4 text-rose-500/70 dark:text-rose-400/70"></i> ID Cards
             </a>
         </div>
 

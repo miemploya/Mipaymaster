@@ -182,6 +182,23 @@ try {
 }
 */
 
+// --- AUTO-SEED SALARY COMPONENTS FOR NEW COMPANIES ---
+// This ensures every company has Basic Salary, Housing, and Transport components
+try {
+    $check_sys = $pdo->prepare("SELECT COUNT(*) FROM salary_components WHERE company_id = ? AND type IN ('basic', 'system')");
+    $check_sys->execute([$company_id]);
+    if ($check_sys->fetchColumn() == 0) {
+        // Basic Salary (50% of gross)
+        $pdo->prepare("INSERT INTO salary_components (company_id, name, type, calculation_method, percentage_base, default_percentage, is_taxable, is_pensionable, is_active) VALUES (?, 'Basic Salary', 'basic', 'percentage', 'gross', 50.00, 1, 1, 1)")->execute([$company_id]);
+        // Housing Allowance (30% of gross)
+        $pdo->prepare("INSERT INTO salary_components (company_id, name, type, calculation_method, percentage_base, default_percentage, is_taxable, is_pensionable, is_active) VALUES (?, 'Housing Allowance', 'system', 'percentage', 'gross', 30.00, 1, 1, 1)")->execute([$company_id]);
+        // Transport Allowance (20% of gross)
+        $pdo->prepare("INSERT INTO salary_components (company_id, name, type, calculation_method, percentage_base, default_percentage, is_taxable, is_pensionable, is_active) VALUES (?, 'Transport Allowance', 'system', 'percentage', 'gross', 20.00, 1, 1, 1)")->execute([$company_id]);
+    }
+} catch (PDOException $e) {
+    error_log("Salary component seeding error: " . $e->getMessage());
+}
+
 // --- HANDLE FORM SUBMISSIONS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $tab = $_POST['tab'] ?? '';
@@ -237,6 +254,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 header("Location: company.php?tab=profile");
                 exit;
             } catch (PDOException $e) { $error_msg = "Error: " . $e->getMessage(); }
+        }
+    }
+    
+    // EMPLOYEE ID SETTINGS
+    elseif ($tab === 'employee_id_settings') {
+        $prefix = strtoupper(clean_input($_POST['id_prefix']));
+        $include_year = isset($_POST['id_include_year']) ? 1 : 0;
+        $separator = clean_input($_POST['id_separator']);
+        $padding = intval($_POST['id_padding']);
+        $lock = isset($_POST['id_lock']) ? 1 : 0;
+        
+        // Validate prefix (1-5 alphanumeric characters)
+        if (!preg_match('/^[A-Z0-9]{1,5}$/', $prefix)) {
+            $error_msg = "Prefix must be 1-5 alphanumeric characters.";
+        } elseif ($padding < 2 || $padding > 6) {
+            $error_msg = "Number padding must be between 2 and 6.";
+        } else {
+            try {
+                update_employee_id_settings($company_id, $prefix, $include_year, $separator, $padding, $lock);
+                $success_msg = "Employee ID format updated successfully.";
+                log_audit($company_id, $_SESSION['user_id'], 'UPDATE_EMPLOYEE_ID_FORMAT', "Updated employee ID format: $prefix");
+            } catch (Exception $e) {
+                $error_msg = "Error updating ID settings: " . $e->getMessage();
+            }
         }
     }
     
@@ -393,11 +434,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $percentage = floatval($_POST['comp_perc'] ?? 0);
         $base = $_POST['comp_base'] ?? 'gross';
         
-        $perc_base = 'gross'; // FIX 4: Force gross, no recalculation
+        // FIX: Correctly handle the base selection (basic, gross, or component ID)
+        $perc_base = 'gross'; // Default
         $base_comp_id = null;
         if (is_numeric($base)) {
+            // Base is another component ID
             $base_comp_id = (int)$base;
             $perc_base = 'component';
+        } elseif ($base === 'basic') {
+            $perc_base = 'basic';
+        } else {
+            $perc_base = 'gross';
         }
         
         $is_taxable = isset($_POST['comp_taxable']) ? 1 : 0;
@@ -666,6 +713,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $enable_nhf = isset($_POST['enable_nhf']) ? 1 : 0;
         $pension_employer = floatval($_POST['pension_employer_perc']);
         $pension_employee = floatval($_POST['pension_employee_perc']);
+        
+        // Overtime Configuration (NEW)
+        $overtime_enabled = isset($_POST['overtime_enabled']) ? 1 : 0;
+        $daily_work_hours = floatval($_POST['daily_work_hours'] ?? 8.0);
+        $monthly_work_days = intval($_POST['monthly_work_days'] ?? 22);
+        $overtime_rate = floatval($_POST['overtime_rate'] ?? 1.5);
 
         try {
             // Check if settings exist first
@@ -675,8 +728,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  $pdo->prepare("INSERT INTO statutory_settings (company_id) VALUES (?)")->execute([$company_id]);
             }
             
-            $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_perc=?, pension_employee_perc=? WHERE company_id=?");
-            $stmt->execute([$enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee, $company_id]);
+            $stmt = $pdo->prepare("UPDATE statutory_settings SET 
+                enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, 
+                pension_employer_perc=?, pension_employee_perc=?,
+                overtime_enabled=?, daily_work_hours=?, monthly_work_days=?, overtime_rate=?
+                WHERE company_id=?");
+            $stmt->execute([
+                $enable_paye, $enable_pension, $enable_nhis, $enable_nhf, 
+                $pension_employer, $pension_employee,
+                $overtime_enabled, $daily_work_hours, $monthly_work_days, $overtime_rate,
+                $company_id
+            ]);
             $success_msg = "Statutory settings updated.";
         } catch (PDOException $e) { $error_msg = "Error updating settings: " . $e->getMessage(); }
     }
@@ -813,10 +875,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (PDOException $e) { $error_msg = "Error updating behaviours: " . $e->getMessage(); }
     }
 
-    // 7. ATTENDANCE POLICY (NEW)
+    // 7. ATTENDANCE POLICY (EXTENDED with per-day schedules)
     elseif ($tab === 'attendance_save') {
         $method = $_POST['attendance_method'] ?? 'manual';
-        // Policy fields
+        $default_mode = $_POST['default_mode'] ?? 'daily';
+        
+        // Legacy global times (still used as fallback)
         $check_in_start = $_POST['check_in_start'] ?? '08:00';
         $check_in_end = $_POST['check_in_end'] ?? '09:00';
         $check_out_start = $_POST['check_out_start'] ?? '17:00';
@@ -824,6 +888,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $grace = intval($_POST['grace_period'] ?? 15);
         $enable_ip = isset($_POST['enable_ip']) ? 1 : 0;
         $require_supervisor = isset($_POST['require_supervisor']) ? 1 : 0;
+        
+        // Per-day schedules
+        $days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+        $day_data = [];
+        foreach ($days as $day) {
+            $day_data[$day.'_enabled'] = isset($_POST[$day.'_enabled']) ? 1 : 0;
+            $day_data[$day.'_check_in'] = $_POST[$day.'_check_in'] ?? '08:00';
+            $day_data[$day.'_check_out'] = $_POST[$day.'_check_out'] ?? '17:00';
+            $day_data[$day.'_grace'] = intval($_POST[$day.'_grace'] ?? 15);
+        }
+        
+        // Automation settings
+        $auto_absent_enabled = isset($_POST['auto_absent_enabled']) ? 1 : 0;
+        $auto_checkout_enabled = isset($_POST['auto_checkout_enabled']) ? 1 : 0;
+        $auto_checkout_hours = intval($_POST['auto_checkout_hours_after'] ?? 3);
         
         // Lateness deduction fields
         $lateness_enabled = isset($_POST['lateness_deduction_enabled']) ? 1 : 0;
@@ -847,17 +926,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // 2. Update/Create Policy
             $check = $pdo->prepare("SELECT id FROM attendance_policies WHERE company_id = ?");
             $check->execute([$company_id]);
+            
+            // Build columns and values for per-day data
+            $day_columns = '';
+            $day_values = [];
+            foreach ($day_data as $col => $val) {
+                $day_columns .= ", $col";
+                $day_values[] = $val;
+            }
+            
             if ($check->rowCount() == 0) {
-                 $stmt = $pdo->prepare("INSERT INTO attendance_policies (company_id, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_minutes, enable_ip_logging, require_supervisor_confirmation, lateness_deduction_enabled, lateness_deduction_amount, lateness_deduction_type, lateness_per_minute_rate, max_lateness_deduction, lateness_apply_manual, lateness_apply_self, lateness_apply_biometric) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                 $stmt->execute([$company_id, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric]);
+                // INSERT with all columns
+                $sql = "INSERT INTO attendance_policies (company_id, default_mode, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_minutes, enable_ip_logging, require_supervisor_confirmation, auto_absent_enabled, auto_checkout_enabled, auto_checkout_hours_after, lateness_deduction_enabled, lateness_deduction_amount, lateness_deduction_type, lateness_per_minute_rate, max_lateness_deduction, lateness_apply_manual, lateness_apply_self, lateness_apply_biometric $day_columns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?" . str_repeat(', ?', count($day_values)) . ")";
+                $params = array_merge([$company_id, $default_mode, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $auto_absent_enabled, $auto_checkout_enabled, $auto_checkout_hours, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric], $day_values);
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($params);
             } else {
-                 $stmt = $pdo->prepare("UPDATE attendance_policies SET check_in_start=?, check_in_end=?, check_out_start=?, check_out_end=?, grace_period_minutes=?, enable_ip_logging=?, require_supervisor_confirmation=?, lateness_deduction_enabled=?, lateness_deduction_amount=?, lateness_deduction_type=?, lateness_per_minute_rate=?, max_lateness_deduction=?, lateness_apply_manual=?, lateness_apply_self=?, lateness_apply_biometric=? WHERE company_id=?");
-                 $stmt->execute([$check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric, $company_id]);
+                // UPDATE with all columns
+                $day_set = '';
+                foreach (array_keys($day_data) as $col) {
+                    $day_set .= ", $col=?";
+                }
+                $sql = "UPDATE attendance_policies SET default_mode=?, check_in_start=?, check_in_end=?, check_out_start=?, check_out_end=?, grace_period_minutes=?, enable_ip_logging=?, require_supervisor_confirmation=?, auto_absent_enabled=?, auto_checkout_enabled=?, auto_checkout_hours_after=?, lateness_deduction_enabled=?, lateness_deduction_amount=?, lateness_deduction_type=?, lateness_per_minute_rate=?, max_lateness_deduction=?, lateness_apply_manual=?, lateness_apply_self=?, lateness_apply_biometric=? $day_set WHERE company_id=?";
+                $params = array_merge([$default_mode, $check_in_start, $check_in_end, $check_out_start, $check_out_end, $grace, $enable_ip, $require_supervisor, $auto_absent_enabled, $auto_checkout_enabled, $auto_checkout_hours, $lateness_enabled, $lateness_amount, $lateness_type, $per_minute_rate, $max_deduction, $apply_manual, $apply_self, $apply_biometric], $day_values, [$company_id]);
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($params);
             }
             
             $pdo->commit();
             $_SESSION['flash_success'] = "Attendance policy updated successfully.";
-            log_audit($company_id, $_SESSION['user_id'], 'UPDATE_ATTENDANCE_POLICY', "Updated attendance method to: $method");
+            log_audit($company_id, $_SESSION['user_id'], 'UPDATE_ATTENDANCE_POLICY', "Updated attendance: mode=$default_mode, method=$method");
             header("Location: company.php?tab=attendance");
             exit;
             
@@ -886,8 +984,15 @@ if (!$company) {
 }
 $company_name = $company['name'] ?? 'Company';
 
-// 2. Statutory
-$statutory = ['enable_paye'=>1, 'enable_pension'=>1, 'pension_employer_perc'=>10, 'pension_employee_perc'=>8, 'enable_nhis'=>0, 'enable_nhf'=>0];
+// 2. Statutory (includes overtime configuration)
+$statutory = [
+    'enable_paye'=>1, 'enable_pension'=>1, 
+    'pension_employer_perc'=>10, 'pension_employee_perc'=>8, 
+    'enable_nhis'=>0, 'enable_nhf'=>0,
+    // Overtime configuration
+    'overtime_enabled'=>0, 'daily_work_hours'=>8.00, 
+    'monthly_work_days'=>22, 'overtime_rate'=>1.50
+];
 try {
     $stmt = $pdo->prepare("SELECT * FROM statutory_settings WHERE company_id = ?");
     $stmt->execute([$company_id]);
@@ -938,6 +1043,10 @@ try {
     }
 } catch (Exception $e) { /* ignore */ }
 
+// EMPLOYEE ID SETTINGS
+$employee_id_settings = get_employee_id_settings($company_id);
+$employee_id_preview = get_employee_id_preview($company_id, 3);
+
 
 // PAYROLL ITEMS (List for UI)
 // PAYROLL ITEMS (List for UI)
@@ -978,24 +1087,34 @@ try {
 } catch (Exception $e) { /* ignore */ }
 
 // MASTER LISTS (Bonuses & Deductions)
+// TAXABLE BONUSES - Per PIT (Personal Income Tax) Act, all bonuses are taxable
 $master_bonuses = [
-    "Sales Commission", "Productivity Bonus", "Attendance Bonus", "Service Charge Bonus", "Tips", "Unpaid Backlog Tip",
-    "Unpaid Backlog Bonus", "Unpaid Backlog Commission", "Appraisal Bonus", "Overtime Pay", "Night Shift Allowance",
-    "Weekend or Holiday Bonus", "Incentive Bonus", "Recognition Bonus", "Professional Certification Bonus", "Call-Out Bonus",
-    "Supervisory Bonus", "Relief Bonus", "Employee of the Month", "Employee of the Year", "Holiday Bonus", "13th Month Bonus",
-    "Quarterly Bonus", "Retention Bonus", "Joining Bonus", "Referral Commission", "Referral Bonus", "Project Completion Bonus",
-    "Sign-On Bonus", "Loyalty/Anniversary Bonus", "Reallocation/Resettlement Allowance", "Expat Allowance", "Death Benefit Pay",
-    "Maternity Gift or Bonus", "Marriage Bonus", "Birthday Bonus", "Special Recognition Award", "Training Reimbursement",
-    "Promotion Adjustment", "Performance Grant", "Hardship Bonus", "Flight Ticket Bonus", "Tool/Equipment Allowance",
-    "Shipboard Allowance", "Hostile Environment Premium", "Family Relocation Bonus", "Baby Delivery Support Bonus",
-    "Back-to-School Bonus", "Mobilization Fee", "Demobilization Fee", "On-Call Bonus", "Daily Site Allowance",
-    "Per Diem (Daily Living Expense)", "Milestone Bonus", "Fixed-Term Completion Bonus", "Hardware Stipend", "Tech Stack Allowance",
-    "Coding/Production Bonus", "Bug Bounty Bonus", "Retention Tokens", "Court Appearance Bonus", "Client Billable Hour Bonus",
-    "Professional Membership Fee Reimbursement", "Christmas Bonus", "Eid Bonus", "Black Friday Bonus", "Welcome Back Bonus",
-    "Anniversary Celebration Bonus", "Campaign Success Bonus", "Festival Allowance", "Zero Disciplinary Case Bonus",
-    "Punctuality Bonus", "Wellness Participation Bonus", "Internal Referral Bonus", "Idea Submission Bonus", "Culture Champion Bonus",
-    "Signing Bonus (Executive)", "Board Attendance Fee", "Executive Car Grant", "Chairman's Gift Bonus", "Exit Appreciation Bonus",
-    "Strategic Retention Allowance", "Other Bonus"
+    // A. Performance & Productivity Bonuses
+    "Performance Bonus", "Productivity Bonus", "Target Achievement Bonus", "KPI / Appraisal Bonus", 
+    "Efficiency Bonus", "Excellence Bonus", "Output-based Bonus",
+    // B. Service-Related Bonuses
+    "Service Charge Bonus", "Long-service Bonus", "Loyalty Bonus", "Retention Bonus", 
+    "End-of-year Service Bonus", "Contract Completion Bonus",
+    // C. Time-Based & Special Occasion Bonuses
+    "13th-month Bonus", "Christmas / Festive Bonus", "Sallah / Easter / Holiday Bonus", 
+    "Anniversary Bonus", "Special Recognition Bonus",
+    // D. Sales, Revenue & Commission Bonuses
+    "Sales Commission", "Profit-sharing Bonus", "Revenue Incentive Bonus", 
+    "Market Expansion Bonus", "Commission Override Bonus",
+    // E. Attendance, Shift & Work-Condition Bonuses
+    "Attendance Bonus", "Night-shift Bonus", "Weekend / Public Holiday Bonus", 
+    "Overtime Bonus", "Call-out / Standby Bonus",
+    // F. Management & Responsibility Bonuses
+    "Management Bonus", "Supervisory Bonus", "Acting Allowance (Bonus)", 
+    "Responsibility Allowance (Cash)", "Leadership Bonus",
+    // G. Risk, Skill & Location Bonuses
+    "Hazard Bonus", "Field-work Bonus", "Offshore / Site Bonus", 
+    "Relocation Bonus (Cash)", "Technical Skill Bonus",
+    // H. Special One-Off & Discretionary Bonuses
+    "Discretionary Bonus", "Spot Bonus", "Project Completion Bonus", 
+    "Signing-on Bonus", "Ex-gratia Bonus",
+    // FINAL: Others
+    "Others"
 ];
 
 
@@ -1104,12 +1223,26 @@ try {
     }
 } catch(Exception $e) { /* ignore */ }
 
-// 6. Attendance Policy (NEW)
+// 6. Attendance Policy (NEW) - Extended with per-day schedules
 $attendance_policy = [
     'method' => $company['attendance_method'] ?? 'manual',
+    'default_mode' => 'daily', // 'shift', 'daily', or 'both'
     'check_in_start' => '08:00', 'check_in_end' => '09:00',
     'check_out_start' => '17:00','check_out_end' => '18:00',
     'grace_period' => 15, 'enable_ip' => 1, 'require_supervisor' => 1,
+    // Per-day schedules for Daily attendance mode
+    'mon_enabled' => 1, 'mon_check_in' => '08:00', 'mon_check_out' => '17:00', 'mon_grace' => 15,
+    'tue_enabled' => 1, 'tue_check_in' => '08:00', 'tue_check_out' => '17:00', 'tue_grace' => 15,
+    'wed_enabled' => 1, 'wed_check_in' => '08:00', 'wed_check_out' => '17:00', 'wed_grace' => 15,
+    'thu_enabled' => 1, 'thu_check_in' => '08:00', 'thu_check_out' => '17:00', 'thu_grace' => 15,
+    'fri_enabled' => 1, 'fri_check_in' => '08:00', 'fri_check_out' => '17:00', 'fri_grace' => 15,
+    'sat_enabled' => 0, 'sat_check_in' => '09:00', 'sat_check_out' => '13:00', 'sat_grace' => 15,
+    'sun_enabled' => 0, 'sun_check_in' => null, 'sun_check_out' => null, 'sun_grace' => 15,
+    // Automation settings
+    'auto_absent_enabled' => 0,
+    'auto_checkout_enabled' => 0,
+    'auto_checkout_hours_after' => 3,
+    // Lateness deduction
     'lateness_deduction_enabled' => 0,
     'lateness_deduction_amount' => 0,
     'lateness_deduction_type' => 'fixed',
@@ -1125,13 +1258,30 @@ try {
     $stmt->execute([$company_id]);
     $pol = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($pol) {
-        $attendance_policy['check_in_start'] = substr($pol['check_in_start'], 0, 5);
-        $attendance_policy['check_in_end'] = substr($pol['check_in_end'], 0, 5);
-        $attendance_policy['check_out_start'] = substr($pol['check_out_start'], 0, 5);
-        $attendance_policy['check_out_end'] = substr($pol['check_out_end'], 0, 5);
-        $attendance_policy['grace_period'] = (int)$pol['grace_period_minutes'];
-        $attendance_policy['enable_ip'] = (int)$pol['enable_ip_logging'];
-        $attendance_policy['require_supervisor'] = (int)$pol['require_supervisor_confirmation'];
+        $attendance_policy['default_mode'] = $pol['default_mode'] ?? 'daily';
+        $attendance_policy['check_in_start'] = substr($pol['check_in_start'] ?? '08:00', 0, 5);
+        $attendance_policy['check_in_end'] = substr($pol['check_in_end'] ?? '09:00', 0, 5);
+        $attendance_policy['check_out_start'] = substr($pol['check_out_start'] ?? '17:00', 0, 5);
+        $attendance_policy['check_out_end'] = substr($pol['check_out_end'] ?? '18:00', 0, 5);
+        $attendance_policy['grace_period'] = (int)($pol['grace_period_minutes'] ?? 15);
+        $attendance_policy['enable_ip'] = (int)($pol['enable_ip_logging'] ?? 1);
+        $attendance_policy['require_supervisor'] = (int)($pol['require_supervisor_confirmation'] ?? 1);
+        
+        // Per-day schedules
+        $days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+        foreach ($days as $day) {
+            $attendance_policy[$day.'_enabled'] = (int)($pol[$day.'_enabled'] ?? ($day === 'sat' || $day === 'sun' ? 0 : 1));
+            $attendance_policy[$day.'_check_in'] = $pol[$day.'_check_in'] ? substr($pol[$day.'_check_in'], 0, 5) : '08:00';
+            $attendance_policy[$day.'_check_out'] = $pol[$day.'_check_out'] ? substr($pol[$day.'_check_out'], 0, 5) : '17:00';
+            $attendance_policy[$day.'_grace'] = (int)($pol[$day.'_grace'] ?? 15);
+        }
+        
+        // Automation
+        $attendance_policy['auto_absent_enabled'] = (int)($pol['auto_absent_enabled'] ?? 0);
+        $attendance_policy['auto_checkout_enabled'] = (int)($pol['auto_checkout_enabled'] ?? 0);
+        $attendance_policy['auto_checkout_hours_after'] = (int)($pol['auto_checkout_hours_after'] ?? 3);
+        
+        // Lateness
         $attendance_policy['lateness_deduction_enabled'] = (int)($pol['lateness_deduction_enabled'] ?? 0);
         $attendance_policy['lateness_deduction_amount'] = floatval($pol['lateness_deduction_amount'] ?? 0);
         $attendance_policy['lateness_deduction_type'] = $pol['lateness_deduction_type'] ?? 'fixed';
@@ -1183,7 +1333,7 @@ try {
                 // TABS
                 currentTab: '<?php 
                     $t = $_GET['tab'] ?? 'profile'; 
-                    echo in_array($t, ['profile','departments','items','components','categories','statutory','behaviour']) ? $t : 'profile';
+                    echo in_array($t, ['profile','departments','items','components','categories','statutory','behaviour','attendance']) ? $t : 'profile';
                 ?>',
                 itemTab: '<?php echo $_GET['item_tab'] ?? 'bonus'; ?>',
                 
@@ -1207,16 +1357,21 @@ try {
                     nhis: <?php echo $statutory['enable_nhis'] ? 'true' : 'false'; ?>,
                     nhf: <?php echo $statutory['enable_nhf'] ? 'true' : 'false'; ?>,
                     pension_employer: <?php echo $statutory['pension_employer_perc'] ?? 0; ?>,
-                    pension_employee: <?php echo $statutory['pension_employee_perc'] ?? 0; ?>
+                    pension_employee: <?php echo $statutory['pension_employee_perc'] ?? 0; ?>,
+                    // Overtime Configuration (stored in statutory_settings)
+                    overtime_enabled: <?php echo ($statutory['overtime_enabled'] ?? 0) ? 'true' : 'false'; ?>,
+                    daily_work_hours: <?php echo $statutory['daily_work_hours'] ?? 8.00; ?>,
+                    monthly_work_days: <?php echo $statutory['monthly_work_days'] ?? 22; ?>,
+                    overtime_rate: <?php echo $statutory['overtime_rate'] ?? 1.50; ?>
                 },
                 behaviour: {
                     prorate: <?php echo $behaviour['prorate_new_hires'] ? 'true' : 'false'; ?>,
                     email: <?php echo $behaviour['email_payslips'] ? 'true' : 'false'; ?>,
-                    password: <?php echo $behaviour['password_protect_payslips'] ? 'true' : 'false'; ?>,
-                    overtime: <?php echo $behaviour['enable_overtime'] ? 'true' : 'false'; ?>
+                    password: <?php echo $behaviour['password_protect_payslips'] ? 'true' : 'false'; ?>
                 },
                 attendance: {
                     method: '<?php echo $attendance_policy['method']; ?>',
+                    default_mode: '<?php echo $attendance_policy['default_mode']; ?>',
                     check_in_start: '<?php echo $attendance_policy['check_in_start']; ?>',
                     check_in_end: '<?php echo $attendance_policy['check_in_end']; ?>',
                     check_out_start: '<?php echo $attendance_policy['check_out_start']; ?>',
@@ -1224,6 +1379,21 @@ try {
                     grace: <?php echo $attendance_policy['grace_period']; ?>,
                     ip: <?php echo $attendance_policy['enable_ip'] ? 'true' : 'false'; ?>,
                     supervisor: <?php echo $attendance_policy['require_supervisor'] ? 'true' : 'false'; ?>,
+                    // Per-day schedules
+                    days: {
+                        mon: { enabled: <?php echo $attendance_policy['mon_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['mon_check_in']; ?>', check_out: '<?php echo $attendance_policy['mon_check_out']; ?>', grace: <?php echo $attendance_policy['mon_grace']; ?> },
+                        tue: { enabled: <?php echo $attendance_policy['tue_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['tue_check_in']; ?>', check_out: '<?php echo $attendance_policy['tue_check_out']; ?>', grace: <?php echo $attendance_policy['tue_grace']; ?> },
+                        wed: { enabled: <?php echo $attendance_policy['wed_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['wed_check_in']; ?>', check_out: '<?php echo $attendance_policy['wed_check_out']; ?>', grace: <?php echo $attendance_policy['wed_grace']; ?> },
+                        thu: { enabled: <?php echo $attendance_policy['thu_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['thu_check_in']; ?>', check_out: '<?php echo $attendance_policy['thu_check_out']; ?>', grace: <?php echo $attendance_policy['thu_grace']; ?> },
+                        fri: { enabled: <?php echo $attendance_policy['fri_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['fri_check_in']; ?>', check_out: '<?php echo $attendance_policy['fri_check_out']; ?>', grace: <?php echo $attendance_policy['fri_grace']; ?> },
+                        sat: { enabled: <?php echo $attendance_policy['sat_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['sat_check_in']; ?>', check_out: '<?php echo $attendance_policy['sat_check_out']; ?>', grace: <?php echo $attendance_policy['sat_grace']; ?> },
+                        sun: { enabled: <?php echo $attendance_policy['sun_enabled'] ? 'true' : 'false'; ?>, check_in: '<?php echo $attendance_policy['sun_check_in'] ?? '09:00'; ?>', check_out: '<?php echo $attendance_policy['sun_check_out'] ?? '13:00'; ?>', grace: <?php echo $attendance_policy['sun_grace']; ?> }
+                    },
+                    // Automation
+                    auto_absent_enabled: <?php echo $attendance_policy['auto_absent_enabled'] ? 'true' : 'false'; ?>,
+                    auto_checkout_enabled: <?php echo $attendance_policy['auto_checkout_enabled'] ? 'true' : 'false'; ?>,
+                    auto_checkout_hours: <?php echo $attendance_policy['auto_checkout_hours_after']; ?>,
+                    // Lateness
                     lateness_enabled: <?php echo $attendance_policy['lateness_deduction_enabled'] ? 'true' : 'false'; ?>,
                     lateness_type: '<?php echo $attendance_policy['lateness_deduction_type']; ?>',
                     lateness_amount: <?php echo $attendance_policy['lateness_deduction_amount']; ?>,
@@ -1234,12 +1404,20 @@ try {
                     apply_self: <?php echo $attendance_policy['lateness_apply_self'] ? 'true' : 'false'; ?>,
                     apply_biometric: <?php echo $attendance_policy['lateness_apply_biometric'] ? 'true' : 'false'; ?>
                 },
+                // Shifts management
+                shifts: [],
+                shiftModalOpen: false,
+                shiftForm: { id: null, name: '', description: '', schedules: {} },
+                staffAssignModalOpen: false,
+                selectedShift: null,
+                unassignedEmployees: [],
+                selectedEmployees: [],
                 
                 // FORMS
                 deptForm: { id: null, name: '', code: '', active: true },
                 itemForm: { id: null, name: '', type: 'bonus', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, recurring: true, active: true, custom: 0, scope: 'company', category_id: null, department_id: null },
                 catForm: { id: null, title: '', amount: 0, basic: 40, housing: 30, transport: 20, other: 10 },
-                newComponent: { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: <?php echo $statutory['enable_paye'] ? 'true' : 'false'; ?>, pensionable: <?php echo $statutory['enable_pension'] ? 'true' : 'false'; ?>, custom: 0 },
+                newComponent: { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'gross', taxable: true, custom: 0 },
                 
                 // UI STATE
                 itemDrawerOpen: false,
@@ -1430,14 +1608,7 @@ try {
                          return alert('This component already exists in your structure.');
                     }
             
-                    // Percentage Validation
-                    if (this.newComponent.method === 'percentage') {
-                         const currentTotal = this.totalAllocated;
-                         const newTotal = currentTotal + parseFloat(this.newComponent.percentage || 0);
-                         if (this.newComponent.base === 'gross' && newTotal > 100) {
-                             return alert('Total salary structure cannot exceed 100%.\nCurrent: ' + currentTotal.toFixed(2) + '%\nNew: ' + newTotal.toFixed(2) + '%');
-                         }
-                    }
+                    // Percentage validation removed - allow any percentage for any base
             
                     this.componentsSaving = true;
                     const formData = new FormData();
@@ -1450,7 +1621,7 @@ try {
                     formData.append('comp_type', 'allowance');
                     formData.append('comp_custom', this.newComponent.custom);
                     if (this.newComponent.taxable) formData.append('comp_taxable', '1');
-                    if (this.newComponent.pensionable) formData.append('comp_pensionable', '1');
+                    // Note: Pensionable removed per user request - custom allowances are not pensionable
                     formData.append('comp_active', '1');
             
                     fetch('company.php', { method: 'POST', body: formData })
@@ -1462,7 +1633,7 @@ try {
                             window.__SALARY_COMPONENTS__ = this.salaryComponents;
                             this.compDrawerOpen = false;
                             // Reset form
-                            this.newComponent = { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'basic', taxable: true, pensionable: true, custom: 0 };
+                            this.newComponent = { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'gross', taxable: true, custom: 0 };
                             // Clear search
                             this.compSearch = '';
                         } else {
@@ -1871,6 +2042,157 @@ try {
                                     </div>
                                 </div>
                                 
+                                <!-- Attendance Mode Selection (NEW) -->
+                                <div class="mb-8 p-6 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/10 dark:to-purple-900/10 rounded-xl border border-indigo-200 dark:border-indigo-800">
+                                    <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
+                                        <i data-lucide="calendar-clock" class="w-5 h-5 text-indigo-500"></i> Attendance Mode
+                                    </h3>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Choose how work schedules are applied to employees.</p>
+                                    
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <label class="cursor-pointer relative">
+                                            <input type="radio" name="default_mode" value="daily" x-model="attendance.default_mode" class="peer sr-only">
+                                            <div class="p-4 rounded-xl border-2 border-slate-200 dark:border-slate-800 peer-checked:border-indigo-600 peer-checked:bg-indigo-50 dark:peer-checked:bg-indigo-900/20 transition-all">
+                                                <div class="flex items-center gap-3">
+                                                    <div class="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                                                        <i data-lucide="calendar" class="w-5 h-5 text-indigo-500"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-slate-900 dark:text-white">Daily Mode</h4>
+                                                        <p class="text-xs text-slate-500">Same schedule for all staff, set per day of week.</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="absolute top-2 right-2 text-indigo-600 opacity-0 peer-checked:opacity-100"><i data-lucide="check-circle-2" class="w-5 h-5"></i></div>
+                                        </label>
+                                        
+                                        <label class="cursor-pointer relative">
+                                            <input type="radio" name="default_mode" value="shift" x-model="attendance.default_mode" class="peer sr-only">
+                                            <div class="p-4 rounded-xl border-2 border-slate-200 dark:border-slate-800 peer-checked:border-indigo-600 peer-checked:bg-indigo-50 dark:peer-checked:bg-indigo-900/20 transition-all">
+                                                <div class="flex items-center gap-3">
+                                                    <div class="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                                                        <i data-lucide="users" class="w-5 h-5 text-purple-500"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-slate-900 dark:text-white">Shift Mode</h4>
+                                                        <p class="text-xs text-slate-500">Assign employees to specific shifts.</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="absolute top-2 right-2 text-indigo-600 opacity-0 peer-checked:opacity-100"><i data-lucide="check-circle-2" class="w-5 h-5"></i></div>
+                                        </label>
+                                        
+                                        <label class="cursor-pointer relative">
+                                            <input type="radio" name="default_mode" value="both" x-model="attendance.default_mode" class="peer sr-only">
+                                            <div class="p-4 rounded-xl border-2 border-slate-200 dark:border-slate-800 peer-checked:border-indigo-600 peer-checked:bg-indigo-50 dark:peer-checked:bg-indigo-900/20 transition-all">
+                                                <div class="flex items-center gap-3">
+                                                    <div class="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                                                        <i data-lucide="git-merge" class="w-5 h-5 text-emerald-500"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-slate-900 dark:text-white">Both</h4>
+                                                        <p class="text-xs text-slate-500">Use shifts for some, daily for others.</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="absolute top-2 right-2 text-indigo-600 opacity-0 peer-checked:opacity-100"><i data-lucide="check-circle-2" class="w-5 h-5"></i></div>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <!-- Per-Day Schedule (Daily Mode) -->
+                                <div x-show="attendance.default_mode === 'daily' || attendance.default_mode === 'both'" x-transition class="mb-8">
+                                    <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
+                                        <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
+                                            <i data-lucide="calendar-days" class="w-5 h-5 text-brand-500"></i> Per-Day Schedule (Daily Mode)
+                                        </h4>
+                                        <p class="text-sm text-slate-500 mb-6">Configure working hours for each day of the week.</p>
+                                        
+                                        <div class="overflow-x-auto">
+                                            <table class="w-full text-sm">
+                                                <thead>
+                                                    <tr class="text-left border-b border-slate-200 dark:border-slate-700">
+                                                        <th class="pb-3 font-semibold text-slate-700 dark:text-slate-300">Day</th>
+                                                        <th class="pb-3 font-semibold text-slate-700 dark:text-slate-300 text-center">Working</th>
+                                                        <th class="pb-3 font-semibold text-slate-700 dark:text-slate-300">Check-In</th>
+                                                        <th class="pb-3 font-semibold text-slate-700 dark:text-slate-300">Check-Out</th>
+                                                        <th class="pb-3 font-semibold text-slate-700 dark:text-slate-300">Grace (min)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                                    <template x-for="(day, key) in {mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday'}" :key="key">
+                                                        <tr class="hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
+                                                            <td class="py-3 font-medium text-slate-900 dark:text-white" x-text="day"></td>
+                                                            <td class="py-3 text-center">
+                                                                <input type="checkbox" :name="key + '_enabled'" value="1" x-model="attendance.days[key].enabled" class="w-5 h-5 text-brand-600 rounded focus:ring-brand-500">
+                                                            </td>
+                                                            <td class="py-3">
+                                                                <input type="time" :name="key + '_check_in'" x-model="attendance.days[key].check_in" :disabled="!attendance.days[key].enabled" class="form-input w-28 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                                            </td>
+                                                            <td class="py-3">
+                                                                <input type="time" :name="key + '_check_out'" x-model="attendance.days[key].check_out" :disabled="!attendance.days[key].enabled" class="form-input w-28 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                                            </td>
+                                                            <td class="py-3">
+                                                                <input type="number" :name="key + '_grace'" x-model="attendance.days[key].grace" :disabled="!attendance.days[key].enabled" min="0" class="form-input w-20 text-sm text-center disabled:opacity-50 disabled:cursor-not-allowed">
+                                                            </td>
+                                                        </tr>
+                                                    </template>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Shift Management Link (Shift Mode) -->
+                                <div x-show="attendance.default_mode === 'shift' || attendance.default_mode === 'both'" x-transition class="mb-8">
+                                    <div class="p-6 bg-purple-50 dark:bg-purple-900/10 rounded-xl border border-purple-200 dark:border-purple-800">
+                                        <div class="flex items-center justify-between">
+                                            <div class="flex items-center gap-4">
+                                                <div class="w-12 h-12 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                                                    <i data-lucide="users-round" class="w-6 h-6 text-purple-600"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-slate-800 dark:text-white">Manage Shifts</h4>
+                                                    <p class="text-sm text-slate-500">Create shifts, assign employees, and configure schedules.</p>
+                                                </div>
+                                            </div>
+                                            <a href="attendance.php?tab=shifts" class="px-4 py-2 bg-purple-600 text-white font-medium rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2">
+                                                <i data-lucide="settings-2" class="w-4 h-4"></i> Open Shift Manager
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Automation Settings -->
+                                <div class="mb-8">
+                                    <div class="p-6 bg-sky-50 dark:bg-sky-900/10 rounded-xl border border-sky-200 dark:border-sky-800">
+                                        <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
+                                            <i data-lucide="bot" class="w-5 h-5 text-sky-500"></i> Automation Settings
+                                        </h4>
+                                        <div class="space-y-4">
+                                            <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-sky-400 transition-colors">
+                                                <div>
+                                                    <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto-Mark Absent</span>
+                                                    <span class="text-xs text-slate-500">Mark employees as absent if no check-in by end of day.</span>
+                                                </div>
+                                                <input type="checkbox" name="auto_absent_enabled" value="1" x-model="attendance.auto_absent_enabled" class="w-5 h-5 text-sky-600 rounded focus:ring-sky-500">
+                                            </label>
+                                            
+                                            <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-sky-400 transition-colors">
+                                                <div>
+                                                    <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto Check-Out</span>
+                                                    <span class="text-xs text-slate-500">Automatically close open check-ins after X hours.</span>
+                                                </div>
+                                                <div class="flex items-center gap-2">
+                                                    <input type="number" name="auto_checkout_hours_after" x-model="attendance.auto_checkout_hours" min="1" max="24" :disabled="!attendance.auto_checkout_enabled" class="form-input w-16 text-center text-sm disabled:opacity-50">
+                                                    <span class="text-xs text-slate-500">hrs</span>
+                                                    <input type="checkbox" name="auto_checkout_enabled" value="1" x-model="attendance.auto_checkout_enabled" class="w-5 h-5 text-sky-600 rounded focus:ring-sky-500">
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <!-- Configuration Panels -->
                                 <div class="bg-white dark:bg-slate-950">
                                     <div x-show="attendance.method === 'manual'" x-transition class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 text-center">
@@ -1965,22 +2287,22 @@ try {
                                                 <div class="grid grid-cols-2 gap-4">
                                                     <div x-show="attendance.lateness_type === 'fixed'">
                                                         <label class="form-label">Fixed Deduction Amount (₦)</label>
-                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" step="100">
+                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" step="0.01">
                                                     </div>
                                                     
                                                     <div x-show="attendance.lateness_type === 'per_minute'">
                                                         <label class="form-label">Rate Per Minute Late (₦)</label>
-                                                        <input type="number" name="lateness_per_minute_rate" x-model="attendance.per_minute_rate" class="form-input" min="0" step="10">
+                                                        <input type="number" name="lateness_per_minute_rate" x-model="attendance.per_minute_rate" class="form-input" min="0" step="0.01">
                                                     </div>
                                                     
                                                     <div x-show="attendance.lateness_type === 'percentage'">
                                                         <label class="form-label">Deduction Percentage (%)</label>
-                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" max="100" step="0.5">
+                                                        <input type="number" name="lateness_deduction_amount" x-model="attendance.lateness_amount" class="form-input" min="0" step="0.01">
                                                     </div>
                                                     
                                                     <div>
                                                         <label class="form-label">Maximum Deduction Cap (₦)</label>
-                                                        <input type="number" name="max_lateness_deduction" x-model="attendance.max_deduction" class="form-input" min="0" step="100" placeholder="No limit if empty">
+                                                        <input type="number" name="max_lateness_deduction" x-model="attendance.max_deduction" class="form-input" min="0" step="0.01" placeholder="No limit if empty">
                                                     </div>
                                                 </div>
                                                 
@@ -2074,7 +2396,7 @@ try {
                                 
                                 <div>
                                     <label class="form-label mb-2 block font-bold text-sm text-slate-700 dark:text-slate-300">Phone Number</label>
-                                    <input type="text" name="phone" value="<?php echo htmlspecialchars($company['phone']); ?>" class="form-input w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all">
+                                    <input type="text" name="phone" value="<?php echo htmlspecialchars($company['phone'] ?? ''); ?>" class="form-input w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all">
                                 </div>
                                 
                                 <div class="md:col-span-2">
@@ -2380,8 +2702,13 @@ try {
                                         <div class="space-y-3 pt-2">
                                             <label class="flex items-center justify-between">
                                                 <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Taxable</span>
-                                                <input type="checkbox" x-model="itemForm.taxable" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
+                                                <input type="checkbox" x-model="itemForm.taxable" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5" checked>
                                             </label>
+                                            <!-- PIT Act Notice - Only for Bonuses -->
+                                            <div x-show="itemTab === 'bonus'" class="p-2 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-700 text-xs text-amber-700 dark:text-amber-400">
+                                                <i data-lucide="info" class="w-3 h-3 inline mr-1"></i>
+                                                <strong>PIT Act:</strong> All bonuses are taxable income. Only uncheck if verified tax-exempt.
+                                            </div>
                                             <label class="flex items-center justify-between">
                                                 <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Pensionable</span>
                                                 <input type="checkbox" x-model="itemForm.pensionable" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
@@ -2581,7 +2908,6 @@ try {
                                                     <th class="px-4 py-3 text-left font-medium text-slate-500 dark:text-slate-400">Value</th>
                                                     <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Options</th>
                                                     <th class="px-4 py-3 text-center font-medium text-slate-500 dark:text-slate-400">Active</th>
-                                                    <th class="px-4 py-3 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
                                                 </tr>
                                             </thead>
                                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
@@ -2622,15 +2948,11 @@ try {
                                                                 <div class="w-9 h-5 bg-slate-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-600"></div>
                                                             </label>
                                                         </td>
-                                                        <td class="px-4 py-3 text-right">
-                                                            <button @click="deleteComponent(comp.id)" class="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors" title="Delete Allowance">
-                                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                                            </button>
-                                                        </td>
+                                                        <!-- Delete button removed: components tied to salary categories -->
                                                     </tr>
                                                 </template>
                                                 <tr x-show="salaryComponents.filter(c => !c.system).length === 0">
-                                                    <td colspan="5" class="py-6 text-center text-slate-500 text-xs italic">
+                                                    <td colspan="4" class="py-6 text-center text-slate-500 text-xs italic">
                                                         No additional allowances added.
                                                     </td>
                                                 </tr>
@@ -2749,50 +3071,16 @@ try {
                                         </div>
                                     </div>
 
-                                    <div x-show="newComponent.method === 'percentage'" class="mt-4 p-3 rounded-lg border text-sm transition-colors"
-                                         :class="(newComponent.base === 'gross' && totalStructPercentage > 100) ? 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/10 dark:border-red-800 dark:text-red-400' : 'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-900/10 dark:border-blue-800 dark:text-blue-400'">
-                                        
-                                        <!-- Gross Base Validation -->
-                                        <div x-show="newComponent.base === 'gross'">
-                                            <div class="flex justify-between font-bold mb-1">
-                                                <span>Total Allocated: <span x-text="totalStructPercentage + '%'"></span></span>
-                                                <span>Remaining: <span x-text="(100 - totalStructPercentage).toFixed(2) + '%'"></span></span>
-                                            </div>
-                                            <div class="w-full bg-white dark:bg-slate-900 h-2 rounded-full overflow-hidden mb-2">
-                                                <div class="h-full transition-all duration-300" 
-                                                     :class="totalStructPercentage > 100 ? 'bg-red-500' : 'bg-blue-500'" 
-                                                     :style="'width: ' + Math.min(totalStructPercentage, 100) + '%'"></div>
-                                            </div>
-                                            <p x-show="totalStructPercentage > 100" class="flex items-start gap-2 font-medium">
-                                                <svg class="w-4 h-4 shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                                                <span>Limit Exceeded! Total salary structure must equal 100%. Please reduce Basic or other allowances.</span>
-                                            </p>
-                                            <p x-show="totalStructPercentage <= 100">
-                                                <svg class="w-3 h-3 inline mr-1" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                                                Target 100% distribution for accurate breakdown.
-                                            </p>
-                                        </div>
-
-                                        <!-- Non-Gross Base Notice -->
-                                        <div x-show="newComponent.base !== 'gross'" class="flex items-start gap-2">
-                                            <svg class="w-4 h-4 shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                                            <span>Values based on <b>Basic Salary</b> or other components do not count towards the Global 100% Structure Cap.</span>
-                                        </div>
-                                    </div>
-
                                     <div class="space-y-3 pt-4">
                                         <label class="flex items-center justify-between">
-                                            <span class="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-help" title="Calculate PAYE on this?">Taxable</span>
-                                            <input type="checkbox" x-model="newComponent.taxable" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
+                                            <span class="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-help" title="Calculate PAYE on this?">Taxable (PAYE)</span>
+                                            <input type="checkbox" x-model="newComponent.taxable" checked class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
                                         </label>
-                                        <label class="flex items-center justify-between">
-                                            <span class="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-help" title="Deduct Pension from this?">Pensionable</span>
-                                            <input type="checkbox" x-model="newComponent.pensionable" class="rounded text-brand-600 bg-slate-100 border-none w-5 h-5">
-                                        </label>
+                                        <!-- Pensionable checkbox removed per user request -->
                                     </div>
                                     </div>
                                     <div class="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
-                                        <button @click="addComponent()" :disabled="newComponent.method === 'percentage' && newComponent.base === 'gross' && totalStructPercentage > 100" :class="{'opacity-50 cursor-not-allowed': newComponent.method === 'percentage' && newComponent.base === 'gross' && totalStructPercentage > 100}" class="w-full py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold rounded-lg hover:opacity-90 transition-opacity shadow-lg">
+                                        <button @click="addComponent()" class="w-full py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold rounded-lg hover:opacity-90 transition-opacity shadow-lg">
                                             Save & Add Allowance
                                         </button>
                                     </div>
@@ -2887,12 +3175,12 @@ try {
                                         
                                         <div>
                                             <label class="form-label">Category Title</label>
-                                            <input type="text" name="cat_name" x-model="catForm.title" @input="updateCategoryTitle()" placeholder="e.g. Senior Associate" class="form-input border" required>
+                                            <input type="text" name="cat_name" x-model="catForm.title" @input="updateCategoryTitle()" placeholder="e.g. Senior Associate" class="form-input border w-full" required>
                                         </div>
                                         
                                         <div>
                                             <label class="form-label">Gross Annual Salary (₦)</label>
-                                            <input type="number" name="cat_gross" x-model="catForm.amount" @blur="checkBreakdownNotification()" class="form-input border" required>
+                                            <input type="number" name="cat_gross" x-model="catForm.amount" @blur="checkBreakdownNotification()" class="form-input border w-full" required>
                                         </div>
 
                                         <div class="pt-4 border-t border-slate-100 dark:border-slate-800">
@@ -2900,19 +3188,19 @@ try {
                                             <div class="grid grid-cols-2 gap-x-4 gap-y-3">
                                                 <div>
                                                     <label class="text-[10px] font-bold text-slate-400 uppercase">Basic</label>
-                                                    <input type="number" name="cat_basic" x-model.number="catForm.basic" class="form-input text-sm border">
+                                                    <input type="number" name="cat_basic" x-model.number="catForm.basic" class="form-input text-sm border w-full">
                                                 </div>
                                                 <div>
                                                     <label class="text-[10px] font-bold text-slate-400 uppercase">Housing</label>
-                                                    <input type="number" name="cat_housing" x-model.number="catForm.housing" class="form-input text-sm border">
+                                                    <input type="number" name="cat_housing" x-model.number="catForm.housing" class="form-input text-sm border w-full">
                                                 </div>
                                                 <div>
                                                     <label class="text-[10px] font-bold text-slate-400 uppercase">Transport</label>
-                                                    <input type="number" name="cat_transport" x-model.number="catForm.transport" class="form-input text-sm border">
+                                                    <input type="number" name="cat_transport" x-model.number="catForm.transport" class="form-input text-sm border w-full">
                                                 </div>
                                                 <div>
                                                     <label class="text-[10px] font-bold text-slate-400 uppercase">Other</label>
-                                                    <input type="number" name="cat_other" x-model.number="catForm.other" class="form-input text-sm border">
+                                                    <input type="number" name="cat_other" x-model.number="catForm.other" class="form-input text-sm border w-full">
                                                 </div>
                                             </div>
                                             
@@ -3050,6 +3338,63 @@ try {
                                                 <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
                                             </label>
                                         </div>
+                                        </div>
+
+                                        <!-- OVERTIME SETTINGS (NEW) -->
+                                        <div class="p-6 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 rounded-xl border border-orange-200 dark:border-orange-800/30 group hover:border-orange-300 dark:hover:border-orange-500/30 transition-all mt-8">
+                                            <div class="flex items-center justify-between mb-6">
+                                                <div class="flex items-center gap-5">
+                                                    <div class="w-12 h-12 flex items-center justify-center bg-orange-100 dark:bg-orange-900/30 rounded-xl text-orange-600 dark:text-orange-400 group-hover:scale-110 transition-transform">
+                                                        <i data-lucide="clock" class="w-6 h-6"></i>
+                                                    </div>
+                                                    <div>
+                                                        <p class="font-bold text-slate-900 dark:text-white">Overtime Pay (Taxable)</p>
+                                                        <p class="text-xs text-slate-500">Enable overtime tracking for employees. Per PIT Act, overtime is taxable income.</p>
+                                                    </div>
+                                                </div>
+                                                <label class="relative inline-flex items-center cursor-pointer">
+                                                    <input type="checkbox" name="overtime_enabled_dummy" x-model="statutory.overtime_enabled" class="sr-only peer">
+                                                    <input type="hidden" name="overtime_enabled" :value="statutory.overtime_enabled ? 'on' : ''">
+                                                    <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-orange-500 font-bold"></div>
+                                                </label>
+                                            </div>
+                                            
+                                            <!-- Overtime Configuration (shown when enabled) -->
+                                            <div x-show="statutory.overtime_enabled" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 -translate-y-2" x-transition:enter-end="opacity-100 translate-y-0" class="grid grid-cols-3 gap-6 pl-16">
+                                                <div class="space-y-1.5">
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Daily Work Hours</label>
+                                                    <div class="relative">
+                                                        <input type="number" name="daily_work_hours" x-model="statutory.daily_work_hours" step="0.5" min="1" max="24" class="form-input pl-4 pr-12 py-2.5" placeholder="8.00">
+                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">hrs</span>
+                                                    </div>
+                                                </div>
+                                                <div class="space-y-1.5">
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Monthly Work Days</label>
+                                                    <div class="relative">
+                                                        <input type="number" name="monthly_work_days" x-model="statutory.monthly_work_days" step="1" min="1" max="31" class="form-input pl-4 pr-14 py-2.5" placeholder="22">
+                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">days</span>
+                                                    </div>
+                                                </div>
+                                                <div class="space-y-1.5">
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Overtime Rate</label>
+                                                    <div class="relative">
+                                                        <input type="number" name="overtime_rate" x-model="statutory.overtime_rate" step="0.1" min="1" max="5" class="form-input pl-4 pr-8 py-2.5" placeholder="1.5">
+                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">x</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Info Note -->
+                                            <div x-show="statutory.overtime_enabled" class="mt-4 pl-16">
+                                                <div class="flex items-start gap-2 p-3 bg-amber-100/50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800/50">
+                                                    <i data-lucide="info" class="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"></i>
+                                                    <p class="text-xs text-amber-700 dark:text-amber-300">
+                                                        <strong>Hourly Rate Calculation:</strong> Gross Salary ÷ (Daily Hours × Monthly Days). 
+                                                        <br>Example: ₦200,000 ÷ (8 × 22) = ₦1,136.36/hr × 1.5 = ₦1,704.55 OT rate/hr
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <div class="mt-10 pt-6 border-t border-slate-100 dark:border-slate-800 flex justify-end">
@@ -3122,20 +3467,16 @@ try {
                                         <p class="text-xs text-slate-500 leading-relaxed">Secure PDF payslips. Employees will need to enter their Date of Birth (DDMMYYYY) to view the file.</p>
                                     </div>
 
-                                    <!-- Overtime -->
-                                    <div class="p-6 bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 group hover:border-brand-300 dark:hover:border-brand-500/30 transition-all">
+                                    <!-- Overtime (DEPRECATED - Use Statutory Tab) -->
+                                    <div class="p-6 bg-slate-100 dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 opacity-60">
                                         <div class="flex items-center justify-between mb-4">
-                                            <div class="w-12 h-12 flex items-center justify-center bg-yellow-100 dark:bg-yellow-900/30 rounded-xl text-yellow-600 dark:text-yellow-400 group-hover:scale-110 transition-transform">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-slate-200 dark:bg-slate-800 rounded-xl text-slate-400">
                                                 <i data-lucide="clock" class="w-6 h-6"></i>
                                             </div>
-                                            <label class="relative inline-flex items-center cursor-pointer">
-                                                <input type="checkbox" name="enable_overtime_dummy" x-model="behaviour.overtime" class="sr-only peer">
-                                                <input type="hidden" name="enable_overtime" :value="behaviour.overtime ? 'on' : ''">
-                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
-                                            </label>
+                                            <span class="text-xs font-bold text-slate-500 bg-slate-200 dark:bg-slate-700 px-2 py-1 rounded">MOVED</span>
                                         </div>
-                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Enable Overtime</h3>
-                                        <p class="text-xs text-slate-500 leading-relaxed">Add overtime input fields to the payroll processing screen for manual calculations.</p>
+                                        <h3 class="font-bold text-slate-600 dark:text-slate-400 mb-1">Enable Overtime</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed">Overtime settings have been moved to the <a href="company.php?tab=statutory" class="text-brand-600 font-bold underline">Statutory Tab</a>. Configure overtime rate, daily hours, and monthly workdays there.</p>
                                     </div>
 
                                 </div>

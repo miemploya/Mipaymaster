@@ -41,6 +41,12 @@ if (isset($_GET['id'])) {
     $next_of_kin = $stmt->fetch();
 }
 
+// Get next Employee ID preview for new employees
+$next_employee_id = '';
+if (!$is_edit) {
+    $next_employee_id = generate_employee_id($company_id, false); // Preview, don't increment
+}
+
 // Handle Form Submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 1. Biodata
@@ -64,15 +70,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pfa = clean_input($_POST['pension_pfa']);
     $rsa = clean_input($_POST['pension_rsa']);
 
-    // Generate Payroll ID if new
-    $payroll_id = $employee['payroll_id'] ?? ('EMP-' . time());
+    // Generate Payroll ID if new (using company's ID format)
+    if ($is_edit) {
+        $payroll_id = $employee['payroll_id'];
+    } else {
+        $payroll_id = generate_employee_id($company_id, true); // Generate and increment counter
+    }
 
     try {
         $pdo->beginTransaction();
 
         if ($is_edit) {
             $stmt = $pdo->prepare("UPDATE employees SET 
-                department_id=?, category_id=?, first_name=?, last_name=?, email=?, phone=?, gender=?, address=?, 
+                department_id=?, salary_category_id=?, first_name=?, last_name=?, email=?, phone=?, gender=?, address=?, 
                 employment_status=?, date_of_joining=?, bank_name=?, account_number=?, account_name=?, 
                 pension_pfa=?, pension_rsa=? 
                 WHERE id=? AND company_id=?");
@@ -85,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             log_audit($company_id, $_SESSION['user_id'], 'UPDATE_EMPLOYEE', "Updated employee details: $first_name $last_name (ID: $emp_id)");
         } else {
             $stmt = $pdo->prepare("INSERT INTO employees 
-                (company_id, department_id, category_id, payroll_id, first_name, last_name, email, phone, gender, address, 
+                (company_id, department_id, salary_category_id, payroll_id, first_name, last_name, email, phone, gender, address, 
                 employment_status, date_of_joining, bank_name, account_number, account_name, pension_pfa, pension_rsa) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([
@@ -221,6 +231,22 @@ $current_page = 'employees';
                     <!-- Section 2: Employment -->
                     <div class="form-section">
                         <h3>Employment Details</h3>
+                        
+                        <!-- Employee ID Display -->
+                        <div class="flex gap-4 mb-4">
+                            <div class="form-group" style="flex:1; max-width: 300px;">
+                                <label class="form-label">Employee ID</label>
+                                <input type="text" 
+                                    class="form-input bg-slate-100 dark:bg-slate-800 font-mono font-bold text-brand-600" 
+                                    value="<?php echo $is_edit ? htmlspecialchars($employee['payroll_id']) : htmlspecialchars($next_employee_id); ?>" 
+                                    readonly 
+                                    title="<?php echo $is_edit ? 'Employee ID cannot be changed' : 'This ID will be assigned on save'; ?>">
+                                <?php if (!$is_edit): ?>
+                                <p class="text-xs text-slate-500 mt-1">This ID will be auto-assigned when saved</p>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        
                         <div class="flex gap-4">
                             <div class="form-group" style="flex:1;">
                                 <label class="form-label">Department</label>
