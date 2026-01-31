@@ -19,6 +19,7 @@ if (php_sapi_name() !== 'cli' && !defined('CRON_ALLOWED')) {
 }
 
 require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/shift_schedule_resolver.php';
 
 // Date configuration
 $today = date('Y-m-d');
@@ -70,24 +71,11 @@ try {
         $checkout_count = 0;
         
         foreach ($open_sessions as $session) {
-            $attendance_mode = $session['attendance_mode'] ?? $company['default_mode'] ?? 'daily';
-            $shift_id = $session['shift_id'];
+            $employee_id = $session['employee_id'];
             
-            // Determine checkout time for this employee
-            $checkout_time = $default_checkout;
-            
-            if ($attendance_mode === 'shift' && $shift_id) {
-                // Get shift's checkout time
-                $stmt_shift = $pdo->prepare("
-                    SELECT check_out_time FROM attendance_shift_schedules
-                    WHERE shift_id = ? AND day_of_week = ?
-                ");
-                $stmt_shift->execute([$shift_id, $day_of_week]);
-                $shift_sched = $stmt_shift->fetch();
-                if ($shift_sched && $shift_sched['check_out_time']) {
-                    $checkout_time = $shift_sched['check_out_time'];
-                }
-            }
+            // Use the central resolver to get the checkout time
+            $schedule = resolve_employee_schedule($pdo, $employee_id, $today, $company_id);
+            $checkout_time = $schedule['check_out'] ?? $default_checkout;
             
             // Only auto-checkout if current time is past checkout time
             $current_time = date('H:i:s');
@@ -103,11 +91,9 @@ try {
             $stmt_update = $pdo->prepare("
                 UPDATE attendance_logs 
                 SET check_out_time = ?,
-                    is_auto_marked = 1,
-                    auto_marked_at = NOW(),
-                    auto_mark_reason = CONCAT(COALESCE(auto_mark_reason, ''), ' | Cron: Auto-checkout missed'),
+                    is_auto_checkout = 1,
                     requires_review = 1,
-                    review_reason = CONCAT(COALESCE(review_reason, ''), 'Auto-checkout: employee did not clock out'),
+                    review_reason = 'Auto-checkout: employee did not clock out',
                     updated_at = NOW()
                 WHERE id = ?
             ");
@@ -152,11 +138,9 @@ try {
         $stmt_close = $pdo->prepare("
             UPDATE attendance_logs 
             SET check_out_time = ?,
-                is_auto_marked = 1,
-                auto_marked_at = NOW(),
-                auto_mark_reason = CONCAT(COALESCE(auto_mark_reason, ''), ' | Cron: Stale session closed'),
+                is_auto_checkout = 1,
                 requires_review = 1,
-                review_reason = CONCAT(COALESCE(review_reason, ''), 'Stale session: checkout added by cron'),
+                review_reason = 'Stale session: checkout added by cron',
                 updated_at = NOW()
             WHERE id = ?
         ");

@@ -2,8 +2,13 @@
 ini_set('display_errors', 1); ini_set('display_startup_errors', 1); error_reporting(E_ALL);
 require_once '../includes/functions.php';
 require_login();
-$company_name = $_SESSION['company_name'] ?? 'My Company';
+
+// Run lazy cron (auto-checkout/absent) in background
+require_once '../includes/lazy_cron.php';
 $company_id = $_SESSION['company_id'];
+run_lazy_cron($pdo, $company_id);
+
+$company_name = $_SESSION['company_name'] ?? 'My Company';
 
 // --- FETCH DATA ---
 
@@ -43,6 +48,12 @@ try {
         if ($r['final_deduction_amount'] > 0) $impact = 'Deduction';
         // Bonus logic placeholder
         
+        // Build auto flags string
+        $auto_flags = [];
+        if (!empty($r['is_auto_checkin'])) $auto_flags[] = 'Auto In';
+        if (!empty($r['is_auto_checkout'])) $auto_flags[] = 'Auto Out';
+        if (!empty($r['is_auto_absent'])) $auto_flags[] = 'Auto Absent';
+        
         $records[] = [
             'date' => $r['date'],
             'id' => $r['emp_code'],
@@ -53,7 +64,11 @@ try {
             'hours' => $hours,
             'status' => ucfirst($r['status']), // present, late, absent, etc
             'overtime' => '0h', // Pending OT logic
-            'impact' => $impact
+            'impact' => $impact,
+            'deductionAmount' => floatval($r['final_deduction_amount'] ?? $r['auto_deduction_amount'] ?? 0),
+            'autoFlags' => implode(', ', $auto_flags),
+            'requiresReview' => !empty($r['requires_review']),
+            'reviewReason' => $r['review_reason'] ?? ''
         ];
     }
     
@@ -164,6 +179,10 @@ try {
 
                 // SHIFT MANAGEMENT
                 shifts: [],
+                defaultPolicy: null, // Company's default attendance policy
+                unassignedCount: 0,  // Employees not on any shift
+                defaultEmployees: [], // List of unassigned employees
+                showDefaultEmployeesModal: false,
                 shiftsLoading: false,
                 showShiftModal: false,
                 showAssignModal: false,
@@ -171,6 +190,9 @@ try {
                     id: null,
                     name: '',
                     description: '',
+                    shift_type: 'fixed',
+                    weeks_on: 1,
+                    weeks_off: 1,
                     schedules: {
                         sun: { enabled: false, check_in: '09:00', check_out: '17:00', grace: 15 },
                         mon: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
@@ -179,12 +201,15 @@ try {
                         thu: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
                         fri: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
                         sat: { enabled: false, check_in: '09:00', check_out: '13:00', grace: 15 }
-                    }
+                    },
+                    daily_hours: { check_in: '08:00', check_out: '17:00', grace: 15 }
                 },
                 selectedShift: null,
                 unassignedEmployees: [],
                 assignedEmployees: [],
                 selectedEmployeeIds: [],
+                cycleStartDate: new Date().toISOString().slice(0, 10),
+                employeeSearch: '',
 
                 init() {
                     // Safe access to lucide
@@ -205,6 +230,19 @@ try {
                 get filteredRecords() {
                     if (this.statusFilter === 'All') return this.dailyRecords;
                     return this.dailyRecords.filter(r => r.status === this.statusFilter);
+                },
+
+                get filteredUnassignedEmployees() {
+                    if (!this.employeeSearch || !this.employeeSearch.trim()) return this.unassignedEmployees;
+                    const search = this.employeeSearch.toLowerCase().trim();
+                    return this.unassignedEmployees.filter(emp => {
+                        const firstName = (emp.first_name || '').toLowerCase();
+                        const lastName = (emp.last_name || '').toLowerCase();
+                        const fullName = firstName + ' ' + lastName;
+                        const payrollId = (emp.payroll_id || '').toLowerCase();
+                        const dept = (emp.department || '').toLowerCase();
+                        return fullName.includes(search) || firstName.includes(search) || lastName.includes(search) || payrollId.includes(search) || dept.includes(search);
+                    });
                 },
 
                 // FLAGGED RECORDS METHODS
@@ -286,22 +324,43 @@ try {
                         const data = await res.json();
                         if (data.status) {
                             this.shifts = data.data;
+                            this.defaultPolicy = data.default_policy;
+                            this.unassignedCount = data.unassigned_count || 0;
                         }
                     } catch (e) { console.error('Failed to load shifts:', e); }
                     this.shiftsLoading = false;
                     setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
                 },
 
+                async viewDefaultEmployees() {
+                    this.showDefaultEmployeesModal = true;
+                    try {
+                        const res = await fetch('ajax/shift_management.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_default_employees' })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.defaultEmployees = data.data;
+                        }
+                    } catch (e) { console.error('Failed to load default employees:', e); }
+                    setTimeout(() => { if(typeof lucide !== 'undefined') lucide.createIcons(); }, 50);
+                },
+
                 openShiftModal(shift = null) {
                     if (shift) {
-                        // Edit existing shift - map schedules from array to object
+                        // Edit existing shift - map all fields
                         this.shiftForm.id = shift.id;
                         this.shiftForm.name = shift.name;
                         this.shiftForm.description = shift.description || '';
+                        this.shiftForm.shift_type = shift.shift_type || 'fixed';
+                        this.shiftForm.weeks_on = parseInt(shift.weeks_on) || 1;
+                        this.shiftForm.weeks_off = parseInt(shift.weeks_off) || 1;
                         
-                        // Map schedules array to object format
-                        const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-                        if (shift.schedules) {
+                        // Map schedules array for fixed shifts
+                        if (this.shiftForm.shift_type === 'fixed' && shift.schedules) {
+                            const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
                             shift.schedules.forEach(s => {
                                 const dayKey = dayNames[s.day_of_week];
                                 if (dayKey) {
@@ -313,6 +372,15 @@ try {
                                     };
                                 }
                             });
+                        }
+                        
+                        // Map daily hours for rotational/weekly/monthly
+                        if (shift.daily_hours) {
+                            this.shiftForm.daily_hours = {
+                                check_in: shift.daily_hours.check_in_time || '08:00',
+                                check_out: shift.daily_hours.check_out_time || '17:00',
+                                grace: parseInt(shift.daily_hours.grace_period_minutes) || 15
+                            };
                         }
                     } else {
                         this.resetShiftForm();
@@ -326,6 +394,9 @@ try {
                         id: null,
                         name: '',
                         description: '',
+                        shift_type: 'fixed',
+                        weeks_on: 1,
+                        weeks_off: 1,
                         schedules: {
                             sun: { enabled: false, check_in: '09:00', check_out: '17:00', grace: 15 },
                             mon: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
@@ -334,7 +405,8 @@ try {
                             thu: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
                             fri: { enabled: true, check_in: '08:00', check_out: '17:00', grace: 15 },
                             sat: { enabled: false, check_in: '09:00', check_out: '13:00', grace: 15 }
-                        }
+                        },
+                        daily_hours: { check_in: '08:00', check_out: '17:00', grace: 15 }
                     };
                 },
 
@@ -350,7 +422,11 @@ try {
                         shift_id: this.shiftForm.id,
                         name: this.shiftForm.name,
                         description: this.shiftForm.description,
-                        schedules: this.shiftForm.schedules
+                        shift_type: this.shiftForm.shift_type,
+                        weeks_on: this.shiftForm.weeks_on,
+                        weeks_off: this.shiftForm.weeks_off,
+                        schedules: this.shiftForm.schedules,
+                        daily_hours: this.shiftForm.daily_hours
                     };
 
                     try {
@@ -392,28 +468,21 @@ try {
                 async openAssignModal(shift) {
                     this.selectedShift = shift;
                     this.selectedEmployeeIds = [];
+                    this.employeeSearch = ''; // Reset search
                     
                     try {
-                        // Load shift details with employees
-                        const res1 = await fetch('ajax/shift_management.php', {
+                        // Load available employees (with current shift info)
+                        const res = await fetch('ajax/shift_management.php', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'get_shift', shift_id: shift.id })
+                            body: JSON.stringify({ action: 'get_unassigned_employees', shift_id: shift.id })
                         });
-                        const data1 = await res1.json();
-                        if (data1.status) {
-                            this.assignedEmployees = data1.data.employees || [];
-                        }
-
-                        // Load unassigned employees
-                        const res2 = await fetch('ajax/shift_management.php', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'get_unassigned_employees' })
-                        });
-                        const data2 = await res2.json();
-                        if (data2.status) {
-                            this.unassignedEmployees = data2.data || [];
+                        const data = await res.json();
+                        if (data.status) {
+                            // Employees already on THIS shift
+                            this.assignedEmployees = data.on_this_shift || [];
+                            // All other employees (available for assignment)
+                            this.unassignedEmployees = data.data || [];
                         }
                     } catch (e) { console.error('Failed to load assignment data:', e); }
                     
@@ -435,7 +504,8 @@ try {
                             body: JSON.stringify({ 
                                 action: 'assign_employees', 
                                 shift_id: this.selectedShift.id,
-                                employee_ids: allIds
+                                employee_ids: allIds,
+                                cycle_start_date: this.cycleStartDate
                             })
                         });
                         const data = await res.json();
@@ -682,8 +752,8 @@ try {
 
                                 <!-- Actions -->
                                 <div class="flex gap-2 border-l border-slate-200 dark:border-slate-800 pl-4 ml-2">
-                                    <button @click="showManualModal = true" class="p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors" title="Manual Entry">
-                                        <i data-lucide="plus-square" class="w-5 h-5"></i>
+                                    <button @click="showManualModal = true" class="px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-lg hover:border-brand-500 hover:text-brand-600 transition-colors text-sm font-medium flex items-center gap-2">
+                                        <i data-lucide="plus-square" class="w-4 h-4"></i> Manual Entry
                                     </button>
                                     <button @click="showUploadModal = true" class="px-4 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-lg hover:opacity-90 text-sm font-bold transition-opacity flex items-center gap-2 shadow-sm">
                                         <i data-lucide="upload" class="w-4 h-4"></i> Upload
@@ -725,23 +795,43 @@ try {
                                             <span x-show="record.overtime !== '0h'" class="block text-xs text-green-600" x-text="'+' + record.overtime + ' OT'"></span>
                                         </td>
                                         <td class="px-6 py-4 text-center">
-                                            <span :class="{
-                                                'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400': record.status === 'Present',
-                                                'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': record.status === 'Late',
-                                                'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400': record.status === 'Absent',
-                                                'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': record.status === 'On Leave',
-                                                'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': record.status === 'Suspended'
-                                            }" class="px-2 py-1 rounded-full text-xs font-bold" x-text="record.status"></span>
+                                            <div class="flex items-center justify-center gap-1.5">
+                                                <span :class="{
+                                                    'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400': record.status === 'Present',
+                                                    'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': record.status === 'Late',
+                                                    'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400': record.status === 'Absent',
+                                                    'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': record.status === 'On Leave',
+                                                    'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': record.status === 'Suspended'
+                                                }" class="px-2 py-1 rounded-full text-xs font-bold" x-text="record.status"></span>
+                                                <!-- Auto Flags Indicator -->
+                                                <span x-show="record.autoFlags" 
+                                                      class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded-full text-[10px] font-bold cursor-help"
+                                                      :title="record.autoFlags">
+                                                    <i data-lucide="bot" class="w-3 h-3"></i>
+                                                    <span>Auto</span>
+                                                </span>
+                                                <!-- Review Required Indicator -->
+                                                <span x-show="record.requiresReview" 
+                                                      class="inline-flex items-center px-1 py-0.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 rounded-full cursor-help"
+                                                      :title="record.reviewReason || 'Requires admin review'">
+                                                    <i data-lucide="alert-triangle" class="w-3 h-3"></i>
+                                                </span>
+                                            </div>
                                         </td>
                                         <td class="px-6 py-4 text-center">
-                                            <div class="flex items-center justify-center gap-1 text-xs font-medium"
-                                                 :class="{
-                                                    'text-red-500': record.impact === 'Deduction',
-                                                    'text-green-500': record.impact === 'Bonus',
-                                                    'text-slate-400': record.impact === 'None'
-                                                 }">
-                                                <i x-show="record.impact !== 'None'" :data-lucide="record.impact === 'Deduction' ? 'trending-down' : 'trending-up'" class="w-3 h-3"></i>
-                                                <span x-text="record.impact"></span>
+                                            <div class="flex flex-col items-center gap-0.5">
+                                                <div class="flex items-center justify-center gap-1 text-xs font-medium"
+                                                     :class="{
+                                                        'text-red-500': record.impact === 'Deduction',
+                                                        'text-green-500': record.impact === 'Bonus',
+                                                        'text-slate-400': record.impact === 'None'
+                                                     }">
+                                                    <i x-show="record.impact !== 'None'" :data-lucide="record.impact === 'Deduction' ? 'trending-down' : 'trending-up'" class="w-3 h-3"></i>
+                                                    <span x-text="record.impact"></span>
+                                                </div>
+                                                <span x-show="record.deductionAmount > 0" class="text-xs font-bold text-red-600 dark:text-red-400">
+                                                    -₦<span x-text="record.deductionAmount.toLocaleString()"></span>
+                                                </span>
                                             </div>
                                         </td>
                                         <td class="px-6 py-4 text-center">
@@ -925,6 +1015,49 @@ try {
                             <i data-lucide="plus" class="w-4 h-4"></i> Create Shift
                         </button>
                     </div>
+                    
+                    <!-- Guide Banner -->
+                    <div class="mb-6 p-4 bg-gradient-to-r from-slate-50 to-purple-50 dark:from-slate-900 dark:to-purple-900/20 border border-slate-200 dark:border-slate-700 rounded-xl">
+                        <div class="flex items-start gap-4">
+                            <div class="w-10 h-10 rounded-full bg-purple-100 dark:bg-purple-900/50 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="info" class="w-5 h-5 text-purple-600"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <h4 class="font-bold text-slate-900 dark:text-white mb-2">How Shifts Work</h4>
+                                <p class="text-sm text-slate-600 dark:text-slate-400 mb-3">Shifts allow you to group employees with different work schedules. Employees not assigned to any shift will use the company's default attendance policy.</p>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                                    <div class="flex items-start gap-2 p-2 bg-white dark:bg-slate-800 rounded-lg">
+                                        <span class="inline-flex items-center justify-center w-5 h-5 bg-purple-100 dark:bg-purple-900/50 text-purple-600 rounded-full font-bold">F</span>
+                                        <div>
+                                            <span class="font-semibold text-slate-700 dark:text-slate-300">Fixed</span>
+                                            <p class="text-slate-500">Same weekly schedule (Mon-Sun). Best for office staff.</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-start gap-2 p-2 bg-white dark:bg-slate-800 rounded-lg">
+                                        <span class="inline-flex items-center justify-center w-5 h-5 bg-orange-100 dark:bg-orange-900/50 text-orange-600 rounded-full font-bold">R</span>
+                                        <div>
+                                            <span class="font-semibold text-slate-700 dark:text-slate-300">Rotational</span>
+                                            <p class="text-slate-500">24 hours work, 24 hours rest. Best for security or factory.</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-start gap-2 p-2 bg-white dark:bg-slate-800 rounded-lg">
+                                        <span class="inline-flex items-center justify-center w-5 h-5 bg-blue-100 dark:bg-blue-900/50 text-blue-600 rounded-full font-bold">W</span>
+                                        <div>
+                                            <span class="font-semibold text-slate-700 dark:text-slate-300">Weekly</span>
+                                            <p class="text-slate-500">Weeks on, weeks off. Best for offshore or remote site workers.</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-start gap-2 p-2 bg-white dark:bg-slate-800 rounded-lg">
+                                        <span class="inline-flex items-center justify-center w-5 h-5 bg-green-100 dark:bg-green-900/50 text-green-600 rounded-full font-bold">M</span>
+                                        <div>
+                                            <span class="font-semibold text-slate-700 dark:text-slate-300">Monthly</span>
+                                            <p class="text-slate-500">Month on, month off. Best for seasonal or contract roles.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- Loading State -->
                     <div x-show="shiftsLoading" class="text-center py-12">
@@ -932,20 +1065,75 @@ try {
                         <p class="mt-3 text-slate-500">Loading shifts...</p>
                     </div>
 
-                    <!-- Empty State -->
-                    <div x-show="!shiftsLoading && shifts.length === 0" class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center">
-                        <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
-                            <i data-lucide="users-round" class="w-8 h-8 text-purple-500"></i>
+                    <!-- Shifts Grid (always shows, includes Default Shift) -->
+                    <div x-show="!shiftsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        
+                        <!-- DEFAULT SHIFT CARD (Company Policy) -->
+                        <div class="bg-gradient-to-br from-slate-50 to-indigo-50 dark:from-slate-900 dark:to-indigo-950 rounded-2xl border-2 border-dashed border-indigo-300 dark:border-indigo-700 overflow-hidden shadow-sm hover:shadow-lg transition-shadow">
+                            <!-- Header -->
+                            <div class="p-5 border-b border-indigo-200 dark:border-indigo-800">
+                                <div class="flex items-start justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center">
+                                            <i data-lucide="home" class="w-5 h-5 text-white"></i>
+                                        </div>
+                                        <div>
+                                            <div class="flex items-center gap-2">
+                                                <h3 class="font-bold text-slate-900 dark:text-white">Default Schedule</h3>
+                                                <span class="px-2 py-0.5 text-xs font-bold bg-indigo-500 text-white rounded-full">FALLBACK</span>
+                                            </div>
+                                            <p class="text-xs text-slate-500 mt-0.5">Applies to unassigned employees</p>
+                                        </div>
+                                    </div>
+                                    <a href="company.php?tab=attendance" class="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 rounded transition-colors" title="Edit in Company Settings">
+                                        <i data-lucide="settings" class="w-4 h-4"></i>
+                                    </a>
+                                </div>
+                            </div>
+                            
+                            <!-- Policy Info -->
+                            <div class="p-4 bg-white/50 dark:bg-slate-900/50">
+                                <template x-if="defaultPolicy">
+                                    <div class="space-y-3">
+                                        <div class="flex items-center gap-2 text-sm">
+                                            <i data-lucide="clock" class="w-4 h-4 text-indigo-500"></i>
+                                            <span class="text-slate-600 dark:text-slate-400">
+                                                <span x-text="defaultPolicy.default_check_in ? defaultPolicy.default_check_in.slice(0,5) : '08:00'"></span> - 
+                                                <span x-text="defaultPolicy.default_check_out ? defaultPolicy.default_check_out.slice(0,5) : '17:00'"></span>
+                                            </span>
+                                            <span class="text-xs text-slate-400">(Mon-Fri)</span>
+                                        </div>
+                                        <div class="flex items-center gap-2 text-sm">
+                                            <i data-lucide="timer" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-slate-600 dark:text-slate-400">
+                                                <span x-text="defaultPolicy.grace_period_minutes || 15"></span> min grace period
+                                            </span>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="!defaultPolicy">
+                                    <p class="text-sm text-slate-500 italic">No policy configured yet</p>
+                                </template>
+                            </div>
+                            
+                            <!-- Employee Count & Actions -->
+                            <div class="p-4 border-t border-indigo-200 dark:border-indigo-800">
+                                <div class="flex items-center justify-between mb-3">
+                                    <div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                                        <i data-lucide="users" class="w-4 h-4 text-indigo-500"></i>
+                                        <span><span x-text="unassignedCount" class="font-bold text-indigo-600"></span> employees</span>
+                                    </div>
+                                    <a href="company.php?tab=attendance" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+                                        Edit Policy →
+                                    </a>
+                                </div>
+                                <button @click="viewDefaultEmployees()" x-show="unassignedCount > 0" class="w-full py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                    <i data-lucide="eye" class="w-4 h-4"></i> View Employees
+                                </button>
+                            </div>
                         </div>
-                        <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-2">No Shifts Created</h3>
-                        <p class="text-sm text-slate-500 mb-6">Create your first shift to start assigning employees to specific work schedules.</p>
-                        <button @click="openShiftModal()" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-bold transition-colors">
-                            <i data-lucide="plus" class="w-4 h-4 inline mr-1"></i> Create First Shift
-                        </button>
-                    </div>
 
-                    <!-- Shifts Grid -->
-                    <div x-show="!shiftsLoading && shifts.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <!-- User-Created Shifts -->
                         <template x-for="shift in shifts" :key="shift.id">
                             <div class="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-lg transition-shadow">
                                 <!-- Header -->
@@ -973,12 +1161,37 @@ try {
                                 
                                 <!-- Schedule Preview -->
                                 <div class="p-4 bg-slate-50 dark:bg-slate-900/50">
-                                    <div class="flex flex-wrap gap-1.5 mb-4">
+                                    <!-- Shift Type Badge -->
+                                    <div class="mb-3">
+                                        <span x-show="!shift.shift_type || shift.shift_type === 'fixed'" class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 rounded-full">
+                                            <i data-lucide="calendar" class="w-3 h-3"></i> Fixed Weekly
+                                        </span>
+                                        <span x-show="shift.shift_type === 'rotational'" class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 rounded-full">
+                                            <i data-lucide="repeat" class="w-3 h-3"></i> Rotational 24hr
+                                        </span>
+                                        <span x-show="shift.shift_type === 'weekly'" class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 rounded-full">
+                                            <i data-lucide="calendar-range" class="w-3 h-3"></i> <span x-text="(shift.weeks_on || 1) + 'W on / ' + (shift.weeks_off || 1) + 'W off'"></span>
+                                        </span>
+                                        <span x-show="shift.shift_type === 'monthly'" class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 rounded-full">
+                                            <i data-lucide="calendar-days" class="w-3 h-3"></i> Month in/out
+                                        </span>
+                                    </div>
+                                    
+                                    <!-- Fixed Shift: Day pills -->
+                                    <div x-show="!shift.shift_type || shift.shift_type === 'fixed'" class="flex flex-wrap gap-1.5 mb-4">
                                         <template x-for="(dayLabel, dayIndex) in ['S', 'M', 'T', 'W', 'T', 'F', 'S']" :key="dayIndex">
                                             <div :class="shift.schedules && shift.schedules[dayIndex] && shift.schedules[dayIndex].is_working_day == 1 ? 'bg-purple-600 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'" 
                                                  class="w-7 h-7 rounded text-xs font-bold flex items-center justify-center" x-text="dayLabel">
                                             </div>
                                         </template>
+                                    </div>
+                                    
+                                    <!-- Non-fixed Shift: Hours display -->
+                                    <div x-show="shift.shift_type && shift.shift_type !== 'fixed' && shift.daily_hours" class="mb-4">
+                                        <div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                                            <i data-lucide="clock" class="w-4 h-4"></i>
+                                            <span x-text="(shift.daily_hours?.check_in_time || '08:00') + ' - ' + (shift.daily_hours?.check_out_time || '17:00')"></span>
+                                        </div>
                                     </div>
                                     
                                     <!-- Employee Count -->
@@ -1027,9 +1240,57 @@ try {
                     </div>
                 </div>
                 
-                <!-- Schedule Table -->
+                <!-- Shift Type Selector -->
                 <div>
-                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3">Weekly Schedule</h4>
+                    <label class="form-label">Shift Type</label>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <label :class="shiftForm.shift_type === 'fixed' ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-slate-200 dark:border-slate-700'" 
+                               class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer transition-colors">
+                            <input type="radio" x-model="shiftForm.shift_type" value="fixed" class="w-4 h-4 text-purple-600">
+                            <div>
+                                <span class="font-medium text-sm text-slate-900 dark:text-white">Fixed</span>
+                                <p class="text-xs text-slate-500">Weekly pattern</p>
+                            </div>
+                        </label>
+                        <label :class="shiftForm.shift_type === 'rotational' ? 'border-orange-500 bg-orange-50 dark:bg-orange-900/20' : 'border-slate-200 dark:border-slate-700'" 
+                               class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer transition-colors">
+                            <input type="radio" x-model="shiftForm.shift_type" value="rotational" class="w-4 h-4 text-orange-600">
+                            <div>
+                                <span class="font-medium text-sm text-slate-900 dark:text-white">Rotational</span>
+                                <p class="text-xs text-slate-500">24hr on/off</p>
+                            </div>
+                        </label>
+                        <label :class="shiftForm.shift_type === 'weekly' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'" 
+                               class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer transition-colors">
+                            <input type="radio" x-model="shiftForm.shift_type" value="weekly" class="w-4 h-4 text-blue-600">
+                            <div>
+                                <span class="font-medium text-sm text-slate-900 dark:text-white">Weekly</span>
+                                <p class="text-xs text-slate-500">Week in/out</p>
+                            </div>
+                        </label>
+                        <label :class="shiftForm.shift_type === 'monthly' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'" 
+                               class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer transition-colors">
+                            <input type="radio" x-model="shiftForm.shift_type" value="monthly" class="w-4 h-4 text-green-600">
+                            <div>
+                                <span class="font-medium text-sm text-slate-900 dark:text-white">Monthly</span>
+                                <p class="text-xs text-slate-500">Month in/out</p>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- FIXED SHIFT: 7-Day Schedule Table -->
+                <div x-show="shiftForm.shift_type === 'fixed'" class="space-y-4">
+                    <div class="p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+                        <div class="flex items-start gap-3">
+                            <i data-lucide="calendar" class="w-5 h-5 text-purple-600 flex-shrink-0 mt-0.5"></i>
+                            <div>
+                                <p class="text-sm font-medium text-purple-800 dark:text-purple-200">Fixed Weekly Schedule</p>
+                                <p class="text-xs text-purple-600 dark:text-purple-300 mt-1">Staff follow the same weekly pattern every week. Define working days and times for Monday to Sunday. Non-working days will be marked as rest days automatically.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">Weekly Schedule</h4>
                     <div class="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl">
                         <table class="w-full text-sm">
                             <thead class="bg-slate-50 dark:bg-slate-800">
@@ -1063,6 +1324,111 @@ try {
                         </table>
                     </div>
                 </div>
+                
+                <!-- ROTATIONAL SHIFT: Info + Work Hours -->
+                <div x-show="shiftForm.shift_type === 'rotational'" class="space-y-4">
+                    <div class="p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg">
+                        <div class="flex items-start gap-3">
+                            <i data-lucide="info" class="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5"></i>
+                            <div>
+                                <p class="text-sm font-medium text-orange-800 dark:text-orange-200">24-Hour Rotation Pattern</p>
+                                <p class="text-xs text-orange-600 dark:text-orange-300 mt-1">Staff work 24 hours, then rest 24 hours. Pattern: Mon→Wed→Fri→Sun→Tue→Thu→Sat</p>
+                            </div>
+                        </div>
+                    </div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">Work Day Hours</h4>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="form-label">Check-In</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_in" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Check-Out</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_out" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Grace (min)</label>
+                            <input type="number" x-model="shiftForm.daily_hours.grace" min="0" class="form-input">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- WEEKLY SHIFT: Weeks Config + Work Hours -->
+                <div x-show="shiftForm.shift_type === 'weekly'" class="space-y-4">
+                    <div class="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                        <div class="flex items-start gap-3">
+                            <i data-lucide="calendar-range" class="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5"></i>
+                            <div>
+                                <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Week-In / Week-Out Pattern</p>
+                                <p class="text-xs text-blue-600 dark:text-blue-300 mt-1">Staff work specified weeks on, then take specified weeks off. Mon-Fri applies during work weeks.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">Rotation Schedule</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="form-label">Weeks On</label>
+                            <select x-model="shiftForm.weeks_on" class="form-input">
+                                <option value="1">1 Week</option>
+                                <option value="2">2 Weeks</option>
+                                <option value="3">3 Weeks</option>
+                                <option value="4">4 Weeks</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Weeks Off</label>
+                            <select x-model="shiftForm.weeks_off" class="form-input">
+                                <option value="1">1 Week</option>
+                                <option value="2">2 Weeks</option>
+                                <option value="3">3 Weeks</option>
+                                <option value="4">4 Weeks</option>
+                            </select>
+                        </div>
+                    </div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">Work Day Hours (Mon-Fri)</h4>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="form-label">Check-In</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_in" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Check-Out</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_out" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Grace (min)</label>
+                            <input type="number" x-model="shiftForm.daily_hours.grace" min="0" class="form-input">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- MONTHLY SHIFT: Info + Work Hours -->
+                <div x-show="shiftForm.shift_type === 'monthly'" class="space-y-4">
+                    <div class="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                        <div class="flex items-start gap-3">
+                            <i data-lucide="calendar-days" class="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5"></i>
+                            <div>
+                                <p class="text-sm font-medium text-green-800 dark:text-green-200">Month-In / Month-Out Pattern</p>
+                                <p class="text-xs text-green-600 dark:text-green-300 mt-1">Staff work one full month, then take one month off. Mon-Fri applies during work months.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">Work Day Hours (Mon-Fri)</h4>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="form-label">Check-In</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_in" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Check-Out</label>
+                            <input type="time" x-model="shiftForm.daily_hours.check_out" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Grace (min)</label>
+                            <input type="number" x-model="shiftForm.daily_hours.grace" min="0" class="form-input">
+                        </div>
+                    </div>
+                </div>
             </div>
             
             <div class="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3">
@@ -1070,6 +1436,50 @@ try {
                 <button @click="saveShift()" class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-bold transition-colors flex items-center gap-2">
                     <i data-lucide="save" class="w-4 h-4"></i> Save Shift
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Default Schedule Employees Modal -->
+    <div x-show="showDefaultEmployeesModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div @click.outside="showDefaultEmployeesModal = false" class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg border border-slate-200 dark:border-slate-800 overflow-hidden max-h-[85vh] flex flex-col">
+            <div class="flex justify-between items-center p-6 border-b border-slate-100 dark:border-slate-800 bg-indigo-50 dark:bg-indigo-900/20">
+                <div>
+                    <h3 class="text-xl font-bold text-slate-900 dark:text-white">Default Schedule Employees</h3>
+                    <p class="text-sm text-slate-500">Employees not assigned to any shift</p>
+                </div>
+                <button @click="showDefaultEmployeesModal = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i data-lucide="x" class="w-6 h-6"></i></button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto flex-1">
+                <div x-show="defaultEmployees.length === 0" class="text-center py-8 text-slate-500">
+                    <i data-lucide="users" class="w-12 h-12 mx-auto mb-3 opacity-30"></i>
+                    <p>No employees on Default Schedule</p>
+                </div>
+                
+                <div x-show="defaultEmployees.length > 0" class="space-y-2">
+                    <template x-for="emp in defaultEmployees" :key="emp.id">
+                        <div class="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg">
+                            <div class="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-600 font-bold text-sm" x-text="(emp.first_name?.[0] || '') + (emp.last_name?.[0] || '')"></div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium text-slate-900 dark:text-white" x-text="emp.first_name + ' ' + emp.last_name"></span>
+                                    <span class="text-xs text-slate-400" x-text="emp.payroll_id"></span>
+                                </div>
+                                <div class="flex items-center gap-2 text-xs text-slate-500">
+                                    <span x-text="emp.job_title || 'No title'"></span>
+                                    <span x-show="emp.department">•</span>
+                                    <span x-text="emp.department"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            
+            <div class="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center">
+                <span class="text-sm text-slate-500"><span x-text="defaultEmployees.length" class="font-bold"></span> employees</span>
+                <button @click="showDefaultEmployeesModal = false" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-bold transition-colors">Close</button>
             </div>
         </div>
     </div>
@@ -1086,6 +1496,19 @@ try {
             </div>
             
             <div class="p-6 space-y-4 overflow-y-auto flex-1">
+                <!-- Cycle Start Date (for non-fixed shifts) -->
+                <div x-show="selectedShift && selectedShift.shift_type && selectedShift.shift_type !== 'fixed'" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <div class="flex items-start gap-3 mb-3">
+                        <i data-lucide="calendar-check" class="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5"></i>
+                        <div>
+                            <p class="text-sm font-medium text-amber-800 dark:text-amber-200">Cycle Start Date <span class="font-normal text-amber-600">(Required for Rotational, Weekly, Monthly)</span></p>
+                            <p class="text-xs text-amber-600 dark:text-amber-300 mt-1">This date marks when the employee's work cycle begins. The system calculates whether today is a working day or rest day based on days/weeks/months since this date.</p>
+                            <p class="text-xs text-amber-500 dark:text-amber-400 mt-2 italic">Example: If cycle starts Jan 1 for a rotational shift, Jan 1=work, Jan 2=rest, Jan 3=work, etc.</p>
+                        </div>
+                    </div>
+                    <input type="date" x-model="cycleStartDate" class="form-input w-full">
+                </div>
+                
                 <!-- Currently Assigned -->
                 <div x-show="assignedEmployees.length > 0">
                     <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
@@ -1109,18 +1532,52 @@ try {
                     <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
                         <i data-lucide="user-plus" class="w-4 h-4 text-purple-500"></i> Available Employees
                     </h4>
-                    <div x-show="unassignedEmployees.length === 0" class="text-center py-6 text-slate-500 text-sm">
-                        All employees are already assigned to shifts.
+                    
+                    <!-- Modern Search Input -->
+                    <div class="relative mb-4">
+                        <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                            <i data-lucide="search" class="w-5 h-5 text-purple-400"></i>
+                        </div>
+                        <input type="text" 
+                               x-model="employeeSearch" 
+                               placeholder="Type to search employees..." 
+                               class="w-full pl-12 pr-10 py-3.5 bg-gradient-to-r from-slate-50 to-white dark:from-slate-800 dark:to-slate-900 border-2 border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium placeholder:text-slate-400 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all duration-200 shadow-sm hover:shadow-md"
+                               autocomplete="off">
+                        <button x-show="employeeSearch" 
+                                @click="employeeSearch = ''" 
+                                class="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-purple-600 transition-colors">
+                            <i data-lucide="x-circle" class="w-5 h-5"></i>
+                        </button>
                     </div>
-                    <div x-show="unassignedEmployees.length > 0" class="space-y-2 max-h-60 overflow-y-auto">
-                        <template x-for="emp in unassignedEmployees" :key="emp.id">
+                    
+                    <!-- Search Results Count -->
+                    <div x-show="employeeSearch && filteredUnassignedEmployees.length > 0" class="mb-3 text-xs text-purple-600 dark:text-purple-400 font-medium">
+                        Found <span x-text="filteredUnassignedEmployees.length"></span> employee(s)
+                    </div>
+                    
+                    <div x-show="unassignedEmployees.length === 0" class="text-center py-6 text-slate-500 text-sm">
+                        All employees are already assigned to this shift.
+                    </div>
+                    <div x-show="unassignedEmployees.length > 0 && filteredUnassignedEmployees.length === 0" class="text-center py-6 text-slate-500 text-sm">
+                        No employees match your search.
+                    </div>
+                    <div x-show="filteredUnassignedEmployees.length > 0" class="space-y-2 max-h-60 overflow-y-auto">
+                        <template x-for="emp in filteredUnassignedEmployees" :key="emp.id">
                             <label class="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-purple-400 transition-colors"
                                    :class="{'border-purple-500 bg-purple-50 dark:bg-purple-900/20': selectedEmployeeIds.includes(emp.id)}">
                                 <input type="checkbox" :value="emp.id" x-model="selectedEmployeeIds" class="w-5 h-5 text-purple-600 rounded focus:ring-purple-500">
-                                <div class="flex-1">
-                                    <span class="font-medium text-slate-900 dark:text-white" x-text="emp.first_name + ' ' + emp.last_name"></span>
-                                    <span class="text-xs text-slate-500 ml-2" x-text="emp.payroll_id"></span>
-                                    <span x-show="emp.department" class="block text-xs text-slate-400" x-text="emp.department"></span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="font-medium text-slate-900 dark:text-white" x-text="emp.first_name + ' ' + emp.last_name"></span>
+                                        <span class="text-xs text-slate-500" x-text="emp.payroll_id"></span>
+                                        <!-- Current Shift Badge -->
+                                        <span x-show="emp.current_shift_name" 
+                                              class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 rounded-full">
+                                            <i data-lucide="arrow-right-left" class="w-3 h-3"></i>
+                                            <span x-text="emp.current_shift_name"></span>
+                                        </span>
+                                    </div>
+                                    <span x-show="emp.department" class="block text-xs text-slate-400 truncate" x-text="emp.department"></span>
                                 </div>
                             </label>
                         </template>

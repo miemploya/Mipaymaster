@@ -98,75 +98,12 @@ $rejected_loans = array_filter($all_loans, fn($l) => $l['status'] === 'rejected'
 $total_loan_balance = array_sum(array_column($approved_loans, 'balance'));
 $total_monthly_repayment = array_sum(array_column($approved_loans, 'repayment_amount'));
 
-// 9. Fetch Today's Schedule (Shift or Daily Mode)
-$day_of_week = date('w'); // 0=Sunday, 6=Saturday
-$day_keys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-$today_key = $day_keys[$day_of_week];
+// 9. Fetch Today's Schedule using the centralized resolver
+// This handles all shift types: Fixed, Rotational, Weekly, Monthly, and Daily Mode
+require_once '../includes/shift_schedule_resolver.php';
 
-$employee_schedule = [
-    'mode' => 'daily',
-    'shift_name' => null,
-    'is_working_day' => true,
-    'expected_in' => '08:00',
-    'expected_out' => '17:00',
-    'grace' => 15
-];
-
-// Check if employee has a specific assignment
-$stmt = $pdo->prepare("
-    SELECT ea.attendance_mode, ea.shift_id, s.name as shift_name
-    FROM employee_attendance_assignments ea
-    LEFT JOIN attendance_shifts s ON ea.shift_id = s.id
-    WHERE ea.employee_id = ? AND ea.is_active = 1
-");
-$stmt->execute([$employee_id]);
-$emp_assignment = $stmt->fetch(PDO::FETCH_ASSOC);
-
-// Fetch company attendance policy
-$stmt = $pdo->prepare("SELECT * FROM attendance_policies WHERE company_id = ?");
-$stmt->execute([$company_id]);
-$att_policy = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if ($emp_assignment && $emp_assignment['attendance_mode'] === 'shift' && $emp_assignment['shift_id']) {
-    // SHIFT MODE: Get schedule from shift_schedules table
-    $employee_schedule['mode'] = 'shift';
-    $employee_schedule['shift_name'] = $emp_assignment['shift_name'];
-    
-    $stmt = $pdo->prepare("
-        SELECT is_working_day, check_in_time, check_out_time, grace_period_minutes
-        FROM attendance_shift_schedules 
-        WHERE shift_id = ? AND day_of_week = ?
-    ");
-    $stmt->execute([$emp_assignment['shift_id'], $day_of_week]);
-    $shift_sched = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($shift_sched) {
-        $employee_schedule['is_working_day'] = (bool)$shift_sched['is_working_day'];
-        $employee_schedule['expected_in'] = substr($shift_sched['check_in_time'] ?? '08:00', 0, 5);
-        $employee_schedule['expected_out'] = substr($shift_sched['check_out_time'] ?? '17:00', 0, 5);
-        $employee_schedule['grace'] = intval($shift_sched['grace_period_minutes'] ?? 15);
-    }
-} else {
-    // DAILY MODE: Get per-day schedule from attendance_policies
-    $employee_schedule['mode'] = $att_policy['default_mode'] ?? 'daily';
-    
-    $enabled_col = $today_key . '_enabled';
-    $checkin_col = $today_key . '_check_in';
-    $checkout_col = $today_key . '_check_out';
-    $grace_col = $today_key . '_grace';
-    
-    if ($att_policy && isset($att_policy[$enabled_col])) {
-        $employee_schedule['is_working_day'] = (bool)$att_policy[$enabled_col];
-        $employee_schedule['expected_in'] = substr($att_policy[$checkin_col] ?? $att_policy['check_in_start'] ?? '08:00', 0, 5);
-        $employee_schedule['expected_out'] = substr($att_policy[$checkout_col] ?? $att_policy['check_out_end'] ?? '17:00', 0, 5);
-        $employee_schedule['grace'] = intval($att_policy[$grace_col] ?? $att_policy['grace_period_minutes'] ?? 15);
-    } elseif ($att_policy) {
-        // Fallback to global policy settings
-        $employee_schedule['expected_in'] = substr($att_policy['check_in_start'] ?? '08:00', 0, 5);
-        $employee_schedule['expected_out'] = substr($att_policy['check_out_end'] ?? '17:00', 0, 5);
-        $employee_schedule['grace'] = intval($att_policy['grace_period_minutes'] ?? 15);
-    }
-}
+$today = date('Y-m-d');
+$employee_schedule = resolve_employee_schedule($pdo, $employee_id, $today, $company_id);
 
 ?>
 <!DOCTYPE html>

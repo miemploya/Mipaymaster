@@ -12,22 +12,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $enable_nhis = isset($_POST['enable_nhis']) ? 1 : 0;
     $enable_nhf = isset($_POST['enable_nhf']) ? 1 : 0;
     
-    $pension_employer = floatval($_POST['pension_employer_perc']);
-    $pension_employee = floatval($_POST['pension_employee_perc']);
+    $pension_employer = floatval($_POST['pension_employer_perc'] ?? 10);
+    $pension_employee = floatval($_POST['pension_employee_perc'] ?? 8);
 
     try {
-        $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_perc=?, pension_employee_perc=? WHERE company_id=?");
-        $stmt->execute([$enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee, $company_id]);
+        // Check if row exists first
+        $check = $pdo->prepare("SELECT company_id FROM statutory_settings WHERE company_id = ?");
+        $check->execute([$company_id]);
+        
+        if ($check->rowCount() == 0) {
+            // INSERT new row
+            $stmt = $pdo->prepare("INSERT INTO statutory_settings (company_id, enable_paye, enable_pension, enable_nhis, enable_nhf, pension_employer_perc, pension_employee_perc) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$company_id, $enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee]);
+        } else {
+            // UPDATE existing row
+            $stmt = $pdo->prepare("UPDATE statutory_settings SET enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, pension_employer_perc=?, pension_employee_perc=? WHERE company_id=?");
+            $stmt->execute([$enable_paye, $enable_pension, $enable_nhis, $enable_nhf, $pension_employer, $pension_employee, $company_id]);
+        }
         $success_msg = "Statutory settings updated successfully.";
     } catch (PDOException $e) {
-        set_flash_message('error', 'Error updating settings.');
+        set_flash_message('error', 'Error updating settings: ' . $e->getMessage());
     }
 }
 
 // Fetch Settings
 $stmt = $pdo->prepare("SELECT * FROM statutory_settings WHERE company_id = ?");
 $stmt->execute([$company_id]);
-$settings = $stmt->fetch();
+$settings = $stmt->fetch(PDO::FETCH_ASSOC) ?: [
+    'enable_paye' => 1,
+    'enable_pension' => 1,
+    'enable_nhis' => 0,
+    'enable_nhf' => 0,
+    'pension_employer_perc' => 10,
+    'pension_employee_perc' => 8
+];
 
 $current_page = 'statutory';
 ?>

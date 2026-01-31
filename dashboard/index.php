@@ -2,7 +2,11 @@
 require_once '../includes/functions.php';
 require_login();
 
+// Run lazy cron (auto-checkout/absent) in background
+require_once '../includes/lazy_cron.php';
 $company_id = $_SESSION['company_id'] ?? 0;
+run_lazy_cron($pdo, $company_id);
+
 $current_page = 'dashboard';
 
 // Fetch quick stats

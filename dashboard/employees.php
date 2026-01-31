@@ -428,12 +428,49 @@ try {
 } catch (Exception $e) { /* use empty list */ }
 
 
-// Fetch Salary Categories (Base Gross)
+// Fetch Salary Categories (Base Gross + Breakdown Percentages)
 $categories = [];
 try {
     $stmt = $pdo->prepare("SELECT id, name as title, base_gross_amount FROM salary_categories WHERE company_id = ? ORDER BY name ASC");
     $stmt->execute([$company_id]);
     $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Fetch breakdown for each category
+    $breakdownStmt = $pdo->prepare("
+        SELECT sc.name as component_name, scb.percentage 
+        FROM salary_category_breakdown scb 
+        JOIN salary_components sc ON scb.salary_component_id = sc.id 
+        WHERE scb.category_id = ?
+    ");
+    foreach ($categories as &$cat) {
+        $breakdownStmt->execute([$cat['id']]);
+        $breakdownRows = $breakdownStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Initialize breakdown percentages
+        $cat['breakdown'] = [
+            'basic' => 0,
+            'housing' => 0,
+            'transport' => 0,
+            'other' => 0
+        ];
+        
+        // Map component names to breakdown keys
+        foreach ($breakdownRows as $row) {
+            $name = strtolower($row['component_name']);
+            $perc = floatval($row['percentage']);
+            if (strpos($name, 'basic') !== false) {
+                $cat['breakdown']['basic'] = $perc;
+            } elseif (strpos($name, 'housing') !== false) {
+                $cat['breakdown']['housing'] = $perc;
+            } elseif (strpos($name, 'transport') !== false) {
+                $cat['breakdown']['transport'] = $perc;
+            } else {
+                // All other allowances go to "other"
+                $cat['breakdown']['other'] += $perc;
+            }
+        }
+    }
+    unset($cat);
 } catch (Exception $e) { /* ignore */ }
 
 // Fetch Salary Components (SSOT Rules)
@@ -618,7 +655,7 @@ unset($emp);
                     });
                 },
                 
-                // Computed Salary Breakdown
+                // Computed Salary Breakdown - Uses CATEGORY-SPECIFIC percentages
                 get calculatedSalary() {
                     if (!this.formData.salary_category_id) return null;
                     const cat = this.salaryCategories.find(c => c.id == this.formData.salary_category_id);
@@ -626,34 +663,29 @@ unset($emp);
                     
                     const gross = parseFloat(cat.base_gross_amount || 0);
                     let breakdown = [];
-                    let basicAmount = 0;
-
-                    // 1. Calculate Basic (System Component)
-                    const basicComp = this.salaryComponents.find(c => c.type === 'basic');
-                    if (basicComp) {
-                        basicAmount = (parseFloat(basicComp.percentage) / 100) * gross;
-                        breakdown.push({ name: basicComp.name, amount: basicAmount, is_base: true });
-                    }
-
-                    // 2. Calculate Others
-                    this.salaryComponents.forEach(comp => {
-                        if (comp.type === 'basic') return; // Already done
-                        if (comp.type === 'system' && comp.name === 'Basic Salary') return; // Double check
-
-                        let amount = 0;
-                        if (comp.calculation_method === 'fixed') {
-                            amount = parseFloat(comp.amount || 0);
-                        } else {
-                            // Percentage
-                            const perc = parseFloat(comp.percentage || 0);
-                            if (comp.percentage_base === 'basic') {
-                                amount = (perc / 100) * basicAmount;
-                            } else {
-                                amount = (perc / 100) * gross;
-                            }
-                        }
-                        breakdown.push({ name: comp.name, amount: amount });
-                    });
+                    
+                    // Use category's own breakdown percentages (from salary_category_breakdown table)
+                    const bd = cat.breakdown || { basic: 0, housing: 0, transport: 0, other: 0 };
+                    
+                    // Basic Salary
+                    const basicPerc = parseFloat(bd.basic || 0);
+                    const basicAmount = (basicPerc / 100) * gross;
+                    breakdown.push({ name: 'Basic Salary', amount: basicAmount });
+                    
+                    // Housing Allowance
+                    const housingPerc = parseFloat(bd.housing || 0);
+                    const housingAmount = (housingPerc / 100) * gross;
+                    breakdown.push({ name: 'Housing Allowance', amount: housingAmount });
+                    
+                    // Transport Allowance
+                    const transportPerc = parseFloat(bd.transport || 0);
+                    const transportAmount = (transportPerc / 100) * gross;
+                    breakdown.push({ name: 'Transport Allowance', amount: transportAmount });
+                    
+                    // Other Allowance (sum of all custom/additional)
+                    const otherPerc = parseFloat(bd.other || 0);
+                    const otherAmount = (otherPerc / 100) * gross;
+                    breakdown.push({ name: 'Other Allowance', amount: otherAmount });
                     
                     return { gross, breakdown };
                 },
@@ -1257,7 +1289,7 @@ unset($emp);
                                     </div>
 
                                     <div class="mt-4 flex items-center justify-center gap-2 text-xs text-brand-600 border-t border-slate-200 dark:border-slate-800 pt-3">
-                                        <i data-lucide="check-circle" class="w-3 h-3"></i> Applied from Company Salary Structure
+                                        <i data-lucide="check-circle" class="w-3 h-3"></i> Applied from Category Breakdown
                                     </div>
                                 </div>
                             </div>

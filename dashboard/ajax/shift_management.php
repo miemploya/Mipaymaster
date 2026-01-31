@@ -28,51 +28,133 @@ try {
             $stmt->execute([$company_id]);
             $shifts = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Fetch schedules for each shift
+            // Fetch schedules/hours for each shift based on type
             foreach ($shifts as &$shift) {
-                $stmt_sched = $pdo->prepare("
-                    SELECT * FROM attendance_shift_schedules 
-                    WHERE shift_id = ? ORDER BY day_of_week
-                ");
-                $stmt_sched->execute([$shift['id']]);
-                $shift['schedules'] = $stmt_sched->fetchAll(PDO::FETCH_ASSOC);
+                $shift_type = $shift['shift_type'] ?? 'fixed';
+                
+                if ($shift_type === 'fixed') {
+                    // 7-day schedule
+                    $stmt_sched = $pdo->prepare("
+                        SELECT * FROM attendance_shift_schedules 
+                        WHERE shift_id = ? ORDER BY day_of_week
+                    ");
+                    $stmt_sched->execute([$shift['id']]);
+                    $shift['schedules'] = $stmt_sched->fetchAll(PDO::FETCH_ASSOC);
+                } else {
+                    // Daily hours for rotational/weekly/monthly
+                    $stmt_hours = $pdo->prepare("SELECT * FROM attendance_shift_daily_hours WHERE shift_id = ?");
+                    $stmt_hours->execute([$shift['id']]);
+                    $shift['daily_hours'] = $stmt_hours->fetch(PDO::FETCH_ASSOC);
+                }
             }
             
-            echo json_encode(['status' => true, 'data' => $shifts]);
+            // Get default attendance policy for this company
+            $stmt_policy = $pdo->prepare("SELECT * FROM attendance_policies WHERE company_id = ?");
+            $stmt_policy->execute([$company_id]);
+            $default_policy = $stmt_policy->fetch(PDO::FETCH_ASSOC);
+            
+            // Count employees NOT assigned to any shift
+            $stmt_unassigned = $pdo->prepare("
+                SELECT COUNT(*) as cnt FROM employees e
+                WHERE e.company_id = ? AND e.employment_status = 'Active'
+                AND e.id NOT IN (
+                    SELECT employee_id FROM employee_attendance_assignments 
+                    WHERE is_active = 1
+                )
+            ");
+            $stmt_unassigned->execute([$company_id]);
+            $unassigned_count = $stmt_unassigned->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0;
+            
+            // Total active employees
+            $stmt_total = $pdo->prepare("SELECT COUNT(*) as cnt FROM employees WHERE company_id = ? AND employment_status = 'Active'");
+            $stmt_total->execute([$company_id]);
+            $total_employees = $stmt_total->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0;
+            
+            echo json_encode([
+                'status' => true, 
+                'data' => $shifts,
+                'default_policy' => $default_policy,
+                'unassigned_count' => intval($unassigned_count),
+                'total_employees' => intval($total_employees)
+            ]);
+            break;
+            
+        case 'get_default_employees':
+            // Get all employees NOT assigned to any shift (using default schedule)
+            $stmt = $pdo->prepare("
+                SELECT e.id, e.payroll_id, e.first_name, e.last_name, e.department, e.job_title
+                FROM employees e
+                WHERE e.company_id = ? AND e.employment_status = 'Active'
+                AND e.id NOT IN (
+                    SELECT employee_id FROM employee_attendance_assignments 
+                    WHERE is_active = 1
+                )
+                ORDER BY e.first_name, e.last_name
+            ");
+            $stmt->execute([$company_id]);
+            $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            echo json_encode(['status' => true, 'data' => $employees]);
             break;
             
         case 'create':
             $name = trim($input['name'] ?? '');
             $description = trim($input['description'] ?? '');
+            $shift_type = $input['shift_type'] ?? 'fixed';
             $schedules = $input['schedules'] ?? [];
+            $daily_hours = $input['daily_hours'] ?? [];
+            $weeks_on = intval($input['weeks_on'] ?? 1);
+            $weeks_off = intval($input['weeks_off'] ?? 1);
             
             if (empty($name)) {
                 throw new Exception('Shift name is required.');
             }
             
+            // Validate shift_type
+            $valid_types = ['fixed', 'rotational', 'weekly', 'monthly'];
+            if (!in_array($shift_type, $valid_types)) {
+                $shift_type = 'fixed';
+            }
+            
             $pdo->beginTransaction();
             
-            // Insert shift
-            $stmt = $pdo->prepare("INSERT INTO attendance_shifts (company_id, name, description) VALUES (?, ?, ?)");
-            $stmt->execute([$company_id, $name, $description]);
-            $shift_id = $pdo->lastInsertId();
-            
-            // Insert schedules (7 days)
-            $stmt_sched = $pdo->prepare("
-                INSERT INTO attendance_shift_schedules 
-                (shift_id, day_of_week, is_working_day, check_in_time, check_out_time, grace_period_minutes)
+            // Insert shift with type
+            $stmt = $pdo->prepare("
+                INSERT INTO attendance_shifts (company_id, name, description, shift_type, weeks_on, weeks_off) 
                 VALUES (?, ?, ?, ?, ?, ?)
             ");
+            $stmt->execute([$company_id, $name, $description, $shift_type, $weeks_on, $weeks_off]);
+            $shift_id = $pdo->lastInsertId();
             
-            $day_names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-            for ($day = 0; $day <= 6; $day++) {
-                $day_key = $day_names[$day];
-                $is_working = isset($schedules[$day_key]['enabled']) ? (int)$schedules[$day_key]['enabled'] : 0;
-                $check_in = $schedules[$day_key]['check_in'] ?? null;
-                $check_out = $schedules[$day_key]['check_out'] ?? null;
-                $grace = intval($schedules[$day_key]['grace'] ?? 15);
+            if ($shift_type === 'fixed') {
+                // Insert 7-day schedules
+                $stmt_sched = $pdo->prepare("
+                    INSERT INTO attendance_shift_schedules 
+                    (shift_id, day_of_week, is_working_day, check_in_time, check_out_time, grace_period_minutes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ");
                 
-                $stmt_sched->execute([$shift_id, $day, $is_working, $check_in, $check_out, $grace]);
+                $day_names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                for ($day = 0; $day <= 6; $day++) {
+                    $day_key = $day_names[$day];
+                    $is_working = isset($schedules[$day_key]['enabled']) ? (int)$schedules[$day_key]['enabled'] : 0;
+                    $check_in = $schedules[$day_key]['check_in'] ?? null;
+                    $check_out = $schedules[$day_key]['check_out'] ?? null;
+                    $grace = intval($schedules[$day_key]['grace'] ?? 15);
+                    
+                    $stmt_sched->execute([$shift_id, $day, $is_working, $check_in, $check_out, $grace]);
+                }
+            } else {
+                // Insert daily hours for rotational/weekly/monthly shifts
+                $check_in = $daily_hours['check_in'] ?? '08:00';
+                $check_out = $daily_hours['check_out'] ?? ($shift_type === 'rotational' ? '08:00' : '17:00');
+                $grace = intval($daily_hours['grace'] ?? 15);
+                
+                $stmt_hours = $pdo->prepare("
+                    INSERT INTO attendance_shift_daily_hours (shift_id, check_in_time, check_out_time, grace_period_minutes)
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmt_hours->execute([$shift_id, $check_in, $check_out, $grace]);
             }
             
             $pdo->commit();
@@ -83,41 +165,68 @@ try {
             $shift_id = intval($input['shift_id'] ?? 0);
             $name = trim($input['name'] ?? '');
             $description = trim($input['description'] ?? '');
+            $shift_type = $input['shift_type'] ?? 'fixed';
             $schedules = $input['schedules'] ?? [];
+            $daily_hours = $input['daily_hours'] ?? [];
+            $weeks_on = intval($input['weeks_on'] ?? 1);
+            $weeks_off = intval($input['weeks_off'] ?? 1);
             
             if (!$shift_id || empty($name)) {
                 throw new Exception('Shift ID and name are required.');
             }
             
-            // Verify ownership
-            $stmt = $pdo->prepare("SELECT id FROM attendance_shifts WHERE id = ? AND company_id = ?");
+            // Verify ownership and get current type
+            $stmt = $pdo->prepare("SELECT id, shift_type FROM attendance_shifts WHERE id = ? AND company_id = ?");
             $stmt->execute([$shift_id, $company_id]);
-            if (!$stmt->fetch()) {
+            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$existing) {
                 throw new Exception('Shift not found.');
             }
             
             $pdo->beginTransaction();
             
-            // Update shift
-            $stmt = $pdo->prepare("UPDATE attendance_shifts SET name = ?, description = ?, updated_at = NOW() WHERE id = ?");
-            $stmt->execute([$name, $description, $shift_id]);
-            
-            // Update schedules
-            $stmt_sched = $pdo->prepare("
-                UPDATE attendance_shift_schedules 
-                SET is_working_day = ?, check_in_time = ?, check_out_time = ?, grace_period_minutes = ?
-                WHERE shift_id = ? AND day_of_week = ?
+            // Update shift with type
+            $stmt = $pdo->prepare("
+                UPDATE attendance_shifts 
+                SET name = ?, description = ?, shift_type = ?, weeks_on = ?, weeks_off = ?, updated_at = NOW() 
+                WHERE id = ?
             ");
+            $stmt->execute([$name, $description, $shift_type, $weeks_on, $weeks_off, $shift_id]);
             
-            $day_names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-            for ($day = 0; $day <= 6; $day++) {
-                $day_key = $day_names[$day];
-                $is_working = isset($schedules[$day_key]['enabled']) ? (int)$schedules[$day_key]['enabled'] : 0;
-                $check_in = $schedules[$day_key]['check_in'] ?? null;
-                $check_out = $schedules[$day_key]['check_out'] ?? null;
-                $grace = intval($schedules[$day_key]['grace'] ?? 15);
+            if ($shift_type === 'fixed') {
+                // Update 7-day schedules
+                $stmt_sched = $pdo->prepare("
+                    INSERT INTO attendance_shift_schedules 
+                    (shift_id, day_of_week, is_working_day, check_in_time, check_out_time, grace_period_minutes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE is_working_day = VALUES(is_working_day), 
+                        check_in_time = VALUES(check_in_time), check_out_time = VALUES(check_out_time), 
+                        grace_period_minutes = VALUES(grace_period_minutes)
+                ");
                 
-                $stmt_sched->execute([$is_working, $check_in, $check_out, $grace, $shift_id, $day]);
+                $day_names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                for ($day = 0; $day <= 6; $day++) {
+                    $day_key = $day_names[$day];
+                    $is_working = isset($schedules[$day_key]['enabled']) ? (int)$schedules[$day_key]['enabled'] : 0;
+                    $check_in = $schedules[$day_key]['check_in'] ?? null;
+                    $check_out = $schedules[$day_key]['check_out'] ?? null;
+                    $grace = intval($schedules[$day_key]['grace'] ?? 15);
+                    
+                    $stmt_sched->execute([$shift_id, $day, $is_working, $check_in, $check_out, $grace]);
+                }
+            } else {
+                // Update daily hours for rotational/weekly/monthly
+                $check_in = $daily_hours['check_in'] ?? '08:00';
+                $check_out = $daily_hours['check_out'] ?? ($shift_type === 'rotational' ? '08:00' : '17:00');
+                $grace = intval($daily_hours['grace'] ?? 15);
+                
+                $stmt_hours = $pdo->prepare("
+                    INSERT INTO attendance_shift_daily_hours (shift_id, check_in_time, check_out_time, grace_period_minutes)
+                    VALUES (?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE check_in_time = VALUES(check_in_time), 
+                        check_out_time = VALUES(check_out_time), grace_period_minutes = VALUES(grace_period_minutes)
+                ");
+                $stmt_hours->execute([$shift_id, $check_in, $check_out, $grace]);
             }
             
             $pdo->commit();
@@ -155,14 +264,22 @@ try {
                 throw new Exception('Shift not found.');
             }
             
-            // Get schedules
-            $stmt_sched = $pdo->prepare("SELECT * FROM attendance_shift_schedules WHERE shift_id = ? ORDER BY day_of_week");
-            $stmt_sched->execute([$shift_id]);
-            $shift['schedules'] = $stmt_sched->fetchAll(PDO::FETCH_ASSOC);
+            // Get schedules or daily hours based on type
+            $shift_type = $shift['shift_type'] ?? 'fixed';
+            if ($shift_type === 'fixed') {
+                $stmt_sched = $pdo->prepare("SELECT * FROM attendance_shift_schedules WHERE shift_id = ? ORDER BY day_of_week");
+                $stmt_sched->execute([$shift_id]);
+                $shift['schedules'] = $stmt_sched->fetchAll(PDO::FETCH_ASSOC);
+            } else {
+                $stmt_hours = $pdo->prepare("SELECT * FROM attendance_shift_daily_hours WHERE shift_id = ?");
+                $stmt_hours->execute([$shift_id]);
+                $shift['daily_hours'] = $stmt_hours->fetch(PDO::FETCH_ASSOC);
+            }
             
-            // Get assigned employees
+            // Get assigned employees with cycle_start_date
             $stmt_emp = $pdo->prepare("
-                SELECT e.id, e.first_name, e.last_name, e.payroll_id, d.name as department
+                SELECT e.id, e.first_name, e.last_name, e.payroll_id, d.name as department,
+                       ea.cycle_start_date
                 FROM employee_attendance_assignments ea
                 JOIN employees e ON ea.employee_id = e.id
                 LEFT JOIN departments d ON e.department_id = d.id
@@ -175,30 +292,56 @@ try {
             break;
             
         case 'get_unassigned_employees':
-            // Get employees not assigned to any shift (for shift mode assignment)
+            // Get ALL active employees with their current shift assignment (if any)
+            // This allows viewing and reassigning employees between shifts
+            $current_shift_id = intval($input['shift_id'] ?? 0);
+            
             $stmt = $pdo->prepare("
-                SELECT e.id, e.first_name, e.last_name, e.payroll_id, d.name as department
+                SELECT e.id, e.first_name, e.last_name, e.payroll_id, d.name as department,
+                       ea.shift_id as current_shift_id,
+                       s.name as current_shift_name
                 FROM employees e
                 LEFT JOIN departments d ON e.department_id = d.id
-                WHERE e.company_id = ? AND e.status = 'active'
-                AND e.id NOT IN (
-                    SELECT employee_id FROM employee_attendance_assignments 
-                    WHERE is_active = 1 AND attendance_mode = 'shift'
-                )
-                ORDER BY e.first_name
+                LEFT JOIN employee_attendance_assignments ea ON e.id = ea.employee_id AND ea.is_active = 1
+                LEFT JOIN attendance_shifts s ON ea.shift_id = s.id
+                WHERE e.company_id = ? AND e.employment_status = 'Active'
+                ORDER BY e.first_name, e.last_name
             ");
             $stmt->execute([$company_id]);
-            $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $all_employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            echo json_encode(['status' => true, 'data' => $employees]);
+            // Separate into already on this shift vs available
+            $on_this_shift = [];
+            $available = [];
+            
+            foreach ($all_employees as $emp) {
+                if ($current_shift_id && intval($emp['current_shift_id']) === $current_shift_id) {
+                    $on_this_shift[] = $emp;
+                } else {
+                    $available[] = $emp;
+                }
+            }
+            
+            echo json_encode([
+                'status' => true, 
+                'data' => $available,
+                'on_this_shift' => $on_this_shift,
+                'all_employees' => $all_employees
+            ]);
             break;
             
         case 'assign_employees':
             $shift_id = intval($input['shift_id'] ?? 0);
             $employee_ids = $input['employee_ids'] ?? [];
+            $cycle_start_date = $input['cycle_start_date'] ?? date('Y-m-d'); // Default to today
             
             if (!$shift_id) {
                 throw new Exception('Shift ID is required.');
+            }
+            
+            // Validate cycle_start_date format
+            if ($cycle_start_date && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $cycle_start_date)) {
+                $cycle_start_date = date('Y-m-d');
             }
             
             $pdo->beginTransaction();
@@ -207,11 +350,13 @@ try {
             $stmt = $pdo->prepare("UPDATE employee_attendance_assignments SET is_active = 0 WHERE shift_id = ?");
             $stmt->execute([$shift_id]);
             
-            // Add new assignments
+            // Add new assignments with cycle_start_date
             $stmt_ins = $pdo->prepare("
-                INSERT INTO employee_attendance_assignments (employee_id, attendance_mode, shift_id, effective_from, is_active)
-                VALUES (?, 'shift', ?, CURDATE(), 1)
-                ON DUPLICATE KEY UPDATE shift_id = VALUES(shift_id), attendance_mode = 'shift', is_active = 1
+                INSERT INTO employee_attendance_assignments 
+                (employee_id, attendance_mode, shift_id, cycle_start_date, effective_from, is_active)
+                VALUES (?, 'shift', ?, ?, CURDATE(), 1)
+                ON DUPLICATE KEY UPDATE shift_id = VALUES(shift_id), attendance_mode = 'shift', 
+                    cycle_start_date = VALUES(cycle_start_date), is_active = 1
             ");
             
             foreach ($employee_ids as $emp_id) {
@@ -219,8 +364,8 @@ try {
                 $stmt_deact = $pdo->prepare("UPDATE employee_attendance_assignments SET is_active = 0 WHERE employee_id = ?");
                 $stmt_deact->execute([$emp_id]);
                 
-                // Then create new assignment
-                $stmt_ins->execute([$emp_id, $shift_id]);
+                // Then create new assignment with cycle start
+                $stmt_ins->execute([$emp_id, $shift_id, $cycle_start_date]);
             }
             
             $pdo->commit();

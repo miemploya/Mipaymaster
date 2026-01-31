@@ -35,6 +35,40 @@ $company_address = $company_details['address'] ?? '';
 $company_email = $company_details['email'] ?? '';
 $company_phone = $company_details['phone'] ?? '';
 
+// Fetch Statutory Settings for legal compliance (PAYE, Pension, NHF, NHIS)
+$stmt = $pdo->prepare("SELECT enable_paye, enable_pension, enable_nhf, enable_nhis FROM statutory_settings WHERE company_id = ?");
+$stmt->execute([$company_id]);
+$statutory_settings = $stmt->fetch(PDO::FETCH_ASSOC) ?: [
+    'enable_paye' => 1,
+    'enable_pension' => 1,
+    'enable_nhf' => 0,
+    'enable_nhis' => 0
+];
+
+// Fetch Behaviour Settings for Display & Overtime (NEW)
+$stmt = $pdo->prepare("SELECT show_lateness, show_loan, show_bonus, show_deductions, overtime_enabled, daily_work_hours, monthly_work_days, overtime_rate FROM payroll_behaviours WHERE company_id = ?");
+$stmt->execute([$company_id]);
+$behaviour_settings = $stmt->fetch(PDO::FETCH_ASSOC) ?: [
+    'show_lateness' => 1,
+    'show_loan' => 1,
+    'show_bonus' => 1,
+    'show_deductions' => 1,
+    'overtime_enabled' => 0,
+    'daily_work_hours' => 8,
+    'monthly_work_days' => 22,
+    'overtime_rate' => 1.5
+];
+
+// Fetch Active Salary Components for dynamic columns
+$stmt = $pdo->prepare("SELECT id, name, type FROM salary_components WHERE company_id = ? AND is_active = 1 ORDER BY type ASC, id ASC");
+$stmt->execute([$company_id]);
+$salary_components = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Sort: Basic first, then allowances
+usort($salary_components, function($a, $b) {
+    $typeOrder = ['basic' => 0, 'allowance' => 1];
+    return ($typeOrder[$a['type']] ?? 2) - ($typeOrder[$b['type']] ?? 2);
+});
+
 // TAXABLE BONUSES - Per PIT (Personal Income Tax) Act, all bonuses are taxable
 $master_bonuses = [
     "Performance Bonus", "Productivity Bonus", "Target Achievement Bonus", "KPI / Appraisal Bonus", 
@@ -146,6 +180,29 @@ $master_bonuses = [
                 // SELECTION
                 selectedDept: '',
                 selectedCat: '',
+                payrollType: 'regular',
+                
+                // STATUTORY SETTINGS (dynamic visibility)
+                statutoryFlags: {
+                    paye: <?php echo $statutory_settings['enable_paye'] ? 'true' : 'false'; ?>,
+                    pension: <?php echo $statutory_settings['enable_pension'] ? 'true' : 'false'; ?>,
+                    nhf: <?php echo $statutory_settings['enable_nhf'] ? 'true' : 'false'; ?>,
+                    nhis: <?php echo $statutory_settings['enable_nhis'] ? 'true' : 'false'; ?>,
+                    // Payroll Display Settings (Now from Behaviour)
+                    showLateness: <?php echo ($behaviour_settings['show_lateness'] ?? 1) ? 'true' : 'false'; ?>,
+                    showLoan: <?php echo ($behaviour_settings['show_loan'] ?? 1) ? 'true' : 'false'; ?>,
+                    showBonus: <?php echo ($behaviour_settings['show_bonus'] ?? 1) ? 'true' : 'false'; ?>,
+                    showDeductions: <?php echo ($behaviour_settings['show_deductions'] ?? 1) ? 'true' : 'false'; ?>
+                },
+                
+                // Employee Info Columns Toggle (collapsed by default)
+                showEmployeeInfo: false,
+                
+                // Hide Employee Names (privacy mode - show ID only)
+                hideEmployeeNames: false,
+                
+                // SALARY COMPONENTS (dynamic columns)
+                salaryComponents: <?php echo json_encode($salary_components, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>,
 
                 totals: {
                     gross: 0,
@@ -173,11 +230,33 @@ $master_bonuses = [
                     name: '',
                     customName: '', // For 'Others' selection
                     amount: 0,
+                    overtime_hours: 0, // For overtime type
                     taxable: true, // Default to taxable per PIT Act
                     notes: ''
                 },
                 adjustments: [],
                 masterBonuses: <?php echo json_encode($master_bonuses); ?>,
+                masterDeductions: [
+                    "Loan Repayment", "Unpaid Backlog Loan Repayment", "Salary Advance Recovery", 
+                    "Staff Welfare Deductions", "Training Fees Recovery", "Staff Uniform", 
+                    "Working Tools Deductions", "Lateness", "Absenteeism Deductions", 
+                    "Damage to Company Property", "Lost Company Items Recovery", "Unapproved Expenses Recovery", 
+                    "Misconduct Fines", "Disciplinary Charges", "Health Maintenance Organization (HMO) Premiums", 
+                    "Court-Ordered Garnishments", "Insurance Premiums", "Mortgage Deductions", 
+                    "Vehicle or Asset Financing Repayment", "Leave Without Pay (LWOP)", "Excess Leave Taken", 
+                    "Training Bond Recovery", "Company Vehicle Usage Charges", "Phone Bill Reimbursement Deductions", 
+                    "Accommodation Rent Deduction", "Utilities (Power, Water, Gas)", "Furniture Loan or Lease Repayment", 
+                    "Laptop or Gadget Recovery", "Company Meal or Feeding Charges", "Internet or Wi-Fi Charges", 
+                    "Official Attire/Uniform Deduction", "Fuel/Transport Card Repayment", "Advance Recovery", 
+                    "Unretired Expense Claims", "Unpaid Tax Backlog Deduction", "Expatriate Work Permit Reimbursement", 
+                    "Visa, Flight Ticket, Relocation Reimbursement", "Special HR Disciplinary Fines", 
+                    "Staff Benevolent Fund", "End-of-Year Party Contribution", "Thrift Savings", "Esusu Deductions", 
+                    "CSR or Fundraising Deductions", "Voluntary Religious Contributions", "Cooperative Society Contributions", 
+                    "Christmas Contribution", "Ramadan Contribution", "Birthday Contribution", "Others"
+                ],
+                deductionSearch: '',
+                showDeductionList: false,
+                filteredDeductions: [],
                 
                 // OVERTIME MODAL (NEW)
                 overtimeModalOpen: false,
@@ -188,16 +267,22 @@ $master_bonuses = [
                     notes: ''
                 },
                 overtimeConfig: {
-                    enabled: <?php 
-                        $stmt = $pdo->prepare("SELECT overtime_enabled, daily_work_hours, monthly_work_days, overtime_rate FROM statutory_settings WHERE company_id = ?");
-                        $stmt->execute([$company_id]);
-                        $ot_config = $stmt->fetch(PDO::FETCH_ASSOC);
-                        echo ($ot_config && $ot_config['overtime_enabled']) ? 'true' : 'false';
-                    ?>,
-                    dailyHours: <?php echo $ot_config['daily_work_hours'] ?? 8.00; ?>,
-                    monthlyDays: <?php echo $ot_config['monthly_work_days'] ?? 22; ?>,
-                    rate: <?php echo $ot_config['overtime_rate'] ?? 1.50; ?>
+                    enabled: <?php echo ($behaviour_settings['overtime_enabled'] ?? 0) ? 'true' : 'false'; ?>,
+                    dailyHours: <?php echo $behaviour_settings['daily_work_hours'] ?? 8.00; ?>,
+                    monthlyDays: <?php echo $behaviour_settings['monthly_work_days'] ?? 22; ?>,
+                    rate: <?php echo $behaviour_settings['overtime_rate'] ?? 1.50; ?>
                 },
+                // Employee-specific OT config (populated when adjustment modal opens)
+                currentOTConfig: {
+                    dailyHours: <?php echo $behaviour_settings['daily_work_hours'] ?? 8.00; ?>,
+                    monthlyDays: <?php echo $behaviour_settings['monthly_work_days'] ?? 22; ?>,
+                    rate: <?php echo $behaviour_settings['overtime_rate'] ?? 1.50; ?>,
+                    shiftName: null,
+                    mode: 'daily',
+                    mode: 'daily',
+                    loading: false
+                },
+                dataHasOvertime: false,
                 
                 // PAYSLIP MODAL
                 payslipModalOpen: false,
@@ -249,7 +334,10 @@ $master_bonuses = [
                         const formData = {
                             action: 'initiate',
                             month: this.currentPeriod.month,
-                            year: this.currentPeriod.year
+                            year: this.currentPeriod.year,
+                            payroll_type: this.payrollType,
+                            department: this.selectedDept,
+                            category: this.selectedCat
                         };
                         console.log('Sending request:', formData);
                         
@@ -302,6 +390,10 @@ $master_bonuses = [
                             console.log('fetchSheet: Got run data, entries count:', data.entries?.length);
                             this.payrollRun = data.run; // id, status, etc.
                             this.sheetData = data.entries;
+                            
+                            // Check if any employee has overtime data to force-show the column
+                            this.dataHasOvertime = this.sheetData.some(emp => parseFloat(emp.breakdown.overtime_pay || 0) > 0);
+                            console.log('fetchSheet: dataHasOvertime =', this.dataHasOvertime);
                             // Update Totals
                             this.totals = {
                                 gross: parseFloat(data.totals.total_gross || 0),
@@ -325,6 +417,44 @@ $master_bonuses = [
                     } finally {
                         this.loading = false;
                         console.log('fetchSheet() finished, sheetData length:', this.sheetData?.length);
+                    }
+                },
+
+                async rejectPayroll() {
+                    if(!this.payrollRun || !this.payrollRun.id) return;
+                    
+                    const reason = document.querySelector('textarea[placeholder*="Approval notes"]')?.value || '';
+                    const confirmMsg = reason 
+                        ? `Are you sure you want to REJECT this payroll?\n\nReason: ${reason}\n\nThis will delete the current draft and allow you to re-run payroll.`
+                        : 'Are you sure you want to REJECT this payroll? This will delete the current draft and allow you to re-run payroll.';
+                    
+                    if(!confirm(confirmMsg)) return;
+
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/payroll_operations.php', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                action: 'reject_payroll',
+                                run_id: this.payrollRun.id,
+                                reason: reason
+                            })
+                        });
+                        const data = await res.json();
+                        if(data.status) {
+                            alert('Payroll rejected. You can now make changes and re-run payroll.');
+                            // Reset state
+                            this.payrollRun = null;
+                            this.sheetData = [];
+                            this.changeView('run');
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                    } finally {
+                        this.loading = false;
                     }
                 },
 
@@ -414,25 +544,187 @@ $master_bonuses = [
                     return words.trim() + ' Naira' + koboText + ' Only';
                 },
                 
+                getMonthName(month) {
+                    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                                   'July', 'August', 'September', 'October', 'November', 'December'];
+                    return months[parseInt(month) - 1] || 'Unknown';
+                },
+                
+                get payrollSheet() {
+                    return this.sheetData || [];
+                },
+                
+                get lastRunId() {
+                    return this.payrollRun?.id || null;
+                },
+                
+                calculateStatutoryTotal(type) {
+                    if (!this.sheetData || this.sheetData.length === 0) return 0;
+                    return this.sheetData.reduce((sum, emp) => {
+                        const breakdown = emp.breakdown || {};
+                        switch(type) {
+                            case 'paye': return sum + parseFloat(breakdown.paye || 0);
+                            case 'pension': return sum + parseFloat(breakdown.pension || 0);
+                            case 'nhf': return sum + parseFloat(breakdown.nhf || 0);
+                            case 'nhis': return sum + parseFloat(breakdown.nhis || 0);
+                            default: return sum;
+                        }
+                    }, 0);
+                },
+                
+                getDepartmentBreakdown() {
+                    if (!this.sheetData || this.sheetData.length === 0) return [];
+                    const depts = {};
+                    this.sheetData.forEach(emp => {
+                        const deptName = emp.department || 'Unassigned';
+                        if (!depts[deptName]) {
+                            depts[deptName] = { name: deptName, count: 0, netPay: 0 };
+                        }
+                        depts[deptName].count++;
+                        // Only include positive net pay in department total
+                        const empNet = parseFloat(emp.net_pay || 0);
+                        if (empNet > 0) depts[deptName].netPay += empNet;
+                    });
+                    return Object.values(depts).sort((a, b) => b.netPay - a.netPay);
+                },
+                
+                getActiveStatutoryTotal() {
+                    let total = 0;
+                    if (this.statutoryFlags.paye) total += this.calculateStatutoryTotal('paye');
+                    if (this.statutoryFlags.pension) total += this.calculateStatutoryTotal('pension');
+                    if (this.statutoryFlags.nhf) total += this.calculateStatutoryTotal('nhf');
+                    if (this.statutoryFlags.nhis) total += this.calculateStatutoryTotal('nhis');
+                    return total;
+                },
+                
+                // Calculate "Others" allowances (all except Basic, Housing, Transport)
+                getOtherAllowances(emp) {
+                    const allComps = emp.breakdown?.all_components || {};
+                    const exclude = ['Basic Salary', 'Housing Allowance', 'Transport Allowance'];
+                    let total = 0;
+                    for (const [name, value] of Object.entries(allComps)) {
+                        if (!exclude.includes(name)) {
+                            total += parseFloat(value) || 0;
+                        }
+                    }
+                    return total;
+                },
+                
                 // ADJUSTMENT METHODS
-                openAdjustment(emp) {
+                async openAdjustment(emp) {
+                    // Show modal immediately with loading state
+                    this.currentOTConfig.loading = true;
+                    this.adjustmentModalOpen = true;
+                    
+                    // Fetch employee-specific OT configuration
+                    try {
+                        const config = await this.fetchEmployeeOTConfig(emp.employee_id);
+                        this.currentOTConfig = {
+                            dailyHours: config.daily_hours || this.overtimeConfig.dailyHours,
+                            monthlyDays: config.monthly_days || this.overtimeConfig.monthlyDays,
+                            rate: config.ot_rate || this.overtimeConfig.rate,
+                            shiftName: config.shift_name,
+                            mode: config.mode || 'daily',
+                            loading: false
+                        };
+                    } catch (e) {
+                        console.error('Failed to fetch OT config:', e);
+                        // Fallback to global config
+                        this.currentOTConfig = {
+                            dailyHours: this.overtimeConfig.dailyHours,
+                            monthlyDays: this.overtimeConfig.monthlyDays,
+                            rate: this.overtimeConfig.rate,
+                            shiftName: null,
+                            mode: 'daily',
+                            loading: false
+                        };
+                    }
+                    
+                    // Calculate hourly rate using employee-specific values
+                    const hourlyRate = parseFloat(emp.gross_salary) / (this.currentOTConfig.dailyHours * this.currentOTConfig.monthlyDays);
+                    
                     this.adjustmentForm = {
                         employee_id: emp.employee_id,
                         employee_name: emp.first_name + ' ' + emp.last_name,
                         type: 'bonus',
                         name: '',
                         amount: 0,
+                        overtime_hours: 0,
+                        hourly_rate: hourlyRate,
+                        gross_salary: parseFloat(emp.gross_salary),
                         notes: ''
                     };
-                    this.adjustmentModalOpen = true;
                     setTimeout(() => lucide.createIcons(), 50);
                 },
                 
+                // Fetch employee-specific OT configuration from server
+                async fetchEmployeeOTConfig(employee_id) {
+                    const res = await fetch('ajax/payroll_operations.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'get_employee_ot_config', employee_id })
+                    });
+                    const data = await res.json();
+                    if (data.status) {
+                        return data;
+                    }
+                    throw new Error(data.message || 'Failed to fetch OT config');
+                },
+                
+                // Calculate overtime pay when hours change
+                calculateOvertimePay() {
+                    const hours = parseFloat(this.adjustmentForm.overtime_hours) || 0;
+                    const hourlyRate = this.adjustmentForm.hourly_rate || 0;
+                    const otRate = this.currentOTConfig.rate || 1.5;
+                    
+                    this.adjustmentForm.amount = hours * hourlyRate * otRate;
+                    this.adjustmentForm.name = 'Overtime';
+                },
+                
                 async saveAdjustment() {
+                    // Validation based on type
+                    if (this.adjustmentForm.type === 'overtime') {
+                        if (!this.adjustmentForm.overtime_hours || this.adjustmentForm.overtime_hours <= 0) {
+                            alert('Please enter overtime hours');
+                            return;
+                        }
+                        // Use save_overtime action for overtime
+                        this.loading = true;
+                        try {
+                            const res = await fetch('ajax/payroll_operations.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    action: 'save_overtime',
+                                    employee_id: this.adjustmentForm.employee_id,
+                                    hours: parseFloat(this.adjustmentForm.overtime_hours),
+                                    notes: this.adjustmentForm.notes,
+                                    month: this.currentPeriod.month,
+                                    year: this.currentPeriod.year
+                                })
+                            });
+                            const data = await res.json();
+                            if (data.status) {
+                                alert('Overtime saved! Re-run payroll to apply.');
+                                this.adjustmentModalOpen = false;
+                                this.fetchSheet(); // Refresh data
+                            } else {
+                                alert('Error: ' + data.message);
+                            }
+                        } catch (e) {
+                            alert('Error: ' + e.message);
+                        } finally {
+                            this.loading = false;
+                        }
+                        return;
+                    }
+                    
+                    // Non-overtime adjustments (bonus/deduction)
                     if (!this.adjustmentForm.name || !this.adjustmentForm.amount) {
                         alert('Please fill in name and amount');
                         return;
                     }
+                    
                     this.loading = true;
                     try {
                         const res = await fetch('ajax/payroll_operations.php', {
@@ -461,6 +753,26 @@ $master_bonuses = [
                     } finally {
                         this.loading = false;
                     }
+                },
+                
+                // DEDUCTION AUTOCOMPLETE
+                filterDeductions() {
+                    const search = this.deductionSearch.toLowerCase();
+                    if (search.length === 0) {
+                        this.filteredDeductions = this.masterDeductions.slice(0, 10);
+                    } else {
+                        this.filteredDeductions = this.masterDeductions.filter(d => 
+                            d.toLowerCase().includes(search)
+                        ).slice(0, 15);
+                    }
+                    this.showDeductionList = true;
+                },
+                
+                selectDeduction(ded) {
+                    this.adjustmentForm.name = ded;
+                    this.deductionSearch = '';
+                    this.showDeductionList = false;
+                    setTimeout(() => lucide.createIcons(), 50);
                 },
                 
                 // OVERTIME METHODS (NEW)
@@ -561,40 +873,146 @@ $master_bonuses = [
                         return;
                     }
                     
-                    // Create a clean table for PDF
-                    const table = document.querySelector('.payroll-table');
-                    const clone = table.cloneNode(true);
+                    const companyName = <?php echo json_encode($payslip_company_name); ?>;
+                    const companyLogo = <?php echo json_encode($company_logo); ?>;
+                    const companyAddress = <?php echo json_encode($company_address); ?>;
+                    const logoPath = companyLogo ? `../uploads/logos/${companyLogo}` : '';
                     
-                    // Remove Actions column from clone
-                    clone.querySelectorAll('th:last-child, td:last-child').forEach(el => el.remove());
+                    const periodStr = new Date(this.currentPeriod.year, this.currentPeriod.month - 1)
+                        .toLocaleDateString('en-NG', { month: 'long', year: 'numeric' });
                     
-                    // Create wrapper
+                    // Check what columns to show
+                    const showBonus = this.sheetData.some(emp => (emp.breakdown.bonus || 0) > 0);
+                    const showOT = this.overtimeConfig.enabled || this.dataHasOvertime;
+                    const showPension = this.statutoryFlags.pension;
+                    const showNHF = this.statutoryFlags.nhf;
+                    const showNHIS = this.statutoryFlags.nhis;
+                    const hasOtherStatutory = showPension || showNHF || showNHIS;
+                    
+                    // Build header row
+                    const employeeColHeader = this.hideEmployeeNames ? 'Employee ID' : 'Employee';
+                    let headerCells = `
+                        <th style="background:#1e293b;color:white;padding:4px;text-align:center;border:1px solid #334155;font-size:13px;">S/N</th>
+                        <th style="background:#1e293b;color:white;padding:4px;text-align:left;border:1px solid #334155;font-size:13px;">${employeeColHeader}</th>
+                        <th style="background:#1e293b;color:white;padding:4px;text-align:left;border:1px solid #334155;font-size:13px;max-width:80px;">Designation</th>
+                        <th style="background:#1e293b;color:white;padding:4px;text-align:left;border:1px solid #334155;font-size:13px;">Bank</th>
+                        <th style="background:#1e293b;color:white;padding:4px;text-align:left;border:1px solid #334155;font-size:13px;">Account No</th>
+                    `;
+                    if (showBonus) headerCells += `<th style="background:#166534;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">Bonus</th>`;
+                    if (showOT) headerCells += `<th style="background:#ea580c;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">OT</th>`;
+                    headerCells += `
+                        <th style="background:#0369a1;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">Gross Pay</th>
+                        <th style="background:#dc2626;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">PAYE</th>
+                    `;
+                    if (hasOtherStatutory) headerCells += `<th style="background:#dc2626;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">Other Statutory Ded.</th>`;
+                    headerCells += `
+                        <th style="background:#7c2d12;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">Total Ded.</th>
+                        <th style="background:#15803d;color:white;padding:4px;text-align:right;border:1px solid #334155;font-size:13px;">Net Pay</th>
+                    `;
+                    
+                    // Build data rows
+                    let dataRows = '';
+                    let totals = { bonus: 0, ot: 0, gross: 0, paye: 0, other: 0, totalDed: 0, net: 0 };
+                    
+                    this.sheetData.forEach((emp, idx) => {
+                        const bonus = emp.breakdown.bonus || 0;
+                        const otPay = emp.breakdown.overtime_pay || 0;
+                        const gross = emp.gross_salary || 0;
+                        const paye = emp.breakdown.paye || 0;
+                        const pension = emp.breakdown.pension || 0;
+                        const nhf = emp.breakdown.nhf || 0;
+                        const nhis = emp.breakdown.nhis || 0;
+                        const otherStat = pension + nhf + nhis;
+                        const totalDed = emp.total_deductions || 0;
+                        const netPay = emp.net_pay || 0;
+                        
+                        totals.bonus += bonus;
+                        totals.ot += otPay;
+                        totals.gross += gross;
+                        totals.paye += paye;
+                        totals.other += otherStat;
+                        totals.totalDed += totalDed;
+                        // Only include positive net pay in total (negative balances excluded)
+                        if (netPay > 0) totals.net += netPay;
+                        
+                        const rowStyle = idx % 2 === 0 ? 'background:#f8fafc;' : 'background:#ffffff;';
+                        const employeeDisplay = this.hideEmployeeNames 
+                            ? (emp.payroll_id || 'N/A')
+                            : `${emp.first_name} ${emp.last_name}`;
+                        
+                        dataRows += `<tr style="${rowStyle}">
+                            <td style="padding:4px;border:1px solid #e2e8f0;text-align:center;font-size:13px;">${idx + 1}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;font-size:13px;white-space:nowrap;">${employeeDisplay}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;font-size:13px;max-width:80px;overflow:hidden;text-overflow:ellipsis;">${emp.designation || '—'}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;font-size:13px;">${emp.bank_name || '—'}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;font-size:13px;">${emp.account_number || '—'}</td>
+                        `;
+                        if (showBonus) dataRows += `<td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;">${this.formatCurrency(bonus)}</td>`;
+                        if (showOT) dataRows += `<td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;">${this.formatCurrency(otPay)}</td>`;
+                        dataRows += `
+                            <td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;font-weight:bold;">${this.formatCurrency(gross)}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;color:#dc2626;">${this.formatCurrency(paye)}</td>
+                        `;
+                        if (hasOtherStatutory) dataRows += `<td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;color:#dc2626;">${this.formatCurrency(otherStat)}</td>`;
+                        dataRows += `
+                            <td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;color:#7c2d12;font-weight:bold;">${this.formatCurrency(totalDed)}</td>
+                            <td style="padding:4px;border:1px solid #e2e8f0;text-align:right;font-size:13px;color:#15803d;font-weight:bold;">${this.formatCurrency(netPay)}</td>
+                        </tr>`;
+                    });
+                    
+                    // Totals row
+                    const colSpan = 5;
+                    let totalsRow = `<tr style="background:#1e293b;color:white;font-weight:bold;">
+                        <td colspan="${colSpan}" style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">TOTALS:</td>
+                    `;
+                    if (showBonus) totalsRow += `<td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.bonus)}</td>`;
+                    if (showOT) totalsRow += `<td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.ot)}</td>`;
+                    totalsRow += `
+                        <td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.gross)}</td>
+                        <td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.paye)}</td>
+                    `;
+                    if (hasOtherStatutory) totalsRow += `<td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.other)}</td>`;
+                    totalsRow += `
+                        <td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.totalDed)}</td>
+                        <td style="padding:4px;border:1px solid #334155;text-align:right;font-size:13px;">${this.formatCurrency(totals.net)}</td>
+                    </tr>`;
+                    
+                    // Build complete HTML
+                    const logoHtml = logoPath ? `<img src="${logoPath}" style="height:50px;width:auto;object-fit:contain;" crossorigin="anonymous">` : '';
+                    
                     const wrapper = document.createElement('div');
-                    wrapper.style.cssText = 'padding: 20px; background: white;';
+                    wrapper.style.cssText = 'padding:15px;background:white;font-family:Arial,sans-serif;';
                     wrapper.innerHTML = `
-                        <div style="text-align: center; margin-bottom: 20px;">
-                            <h2 style="margin: 0; font-size: 18px; font-weight: bold;">Payroll Sheet</h2>
-                            <p style="margin: 5px 0; color: #666; font-size: 12px;">Period: ${new Date(this.currentPeriod.year, this.currentPeriod.month - 1).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })}</p>
-                            <p style="margin: 5px 0; color: #666; font-size: 11px;">Generated: ${new Date().toLocaleString()}</p>
+                        <div style="display:flex;align-items:center;gap:15px;margin-bottom:15px;border-bottom:2px solid #1e293b;padding-bottom:10px;">
+                            ${logoHtml}
+                            <div style="flex:1;">
+                                <h2 style="margin:0;font-size:16px;font-weight:bold;color:#1e293b;">${companyName}</h2>
+                                <p style="margin:2px 0;font-size:10px;color:#64748b;">${companyAddress}</p>
+                            </div>
+                            <div style="text-align:right;">
+                                <h3 style="margin:0;font-size:14px;font-weight:bold;color:#0369a1;">PAYROLL SHEET</h3>
+                                <p style="margin:2px 0;font-size:11px;color:#334155;">${periodStr}</p>
+                                <p style="margin:0;font-size:9px;color:#94a3b8;">Generated: ${new Date().toLocaleString()}</p>
+                            </div>
+                        </div>
+                        <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+                            <thead><tr>${headerCells}</tr></thead>
+                            <tbody>${dataRows}</tbody>
+                            <tfoot>${totalsRow}</tfoot>
+                        </table>
+                        <div style="margin-top:20px;padding-top:10px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:9px;color:#64748b;">
+                            <span>Total Employees: ${this.sheetData.length}</span>
+                            <span>Confidential - ${companyName}</span>
                         </div>
                     `;
-                    wrapper.appendChild(clone);
-                    
-                    // Style the cloned table
-                    clone.style.cssText = 'width: 100%; border-collapse: collapse; font-size: 8px;';
-                    clone.querySelectorAll('th, td').forEach(cell => {
-                        cell.style.cssText = 'border: 1px solid #ddd; padding: 4px 6px; text-align: left;';
-                    });
-                    clone.querySelectorAll('th').forEach(th => {
-                        th.style.cssText += 'background: #f5f5f5; font-weight: bold;';
-                    });
                     
                     const opt = {
-                        margin: [10, 5, 10, 5],
-                        filename: `Payroll_${this.currentPeriod.year}_${String(this.currentPeriod.month).padStart(2, '0')}.pdf`,
-                        image: { type: 'jpeg', quality: 0.98 },
-                        html2canvas: { scale: 2, useCORS: true },
-                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+                        margin: [8, 8, 8, 8],
+                        filename: `Payroll_${companyName.replace(/\s+/g, '_')}_${this.currentPeriod.year}_${String(this.currentPeriod.month).padStart(2, '0')}.pdf`,
+                        image: { type: 'jpeg', quality: 0.95 },
+                        html2canvas: { scale: 1.5, useCORS: true, logging: false },
+                        jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' },
+                        pagebreak: { mode: 'avoid-all', after: '.page-break' }
                     };
                     
                     html2pdf().set(opt).from(wrapper).save();
@@ -722,26 +1140,68 @@ $master_bonuses = [
     <?php include '../includes/dashboard_sidebar.php'; ?>
 
         <!-- NOTIFICATIONS PANEL (SLIDE-OVER) - Starts hidden -->
-        <div id="notif-panel" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
+        <div id="notif-panel" x-data="notificationsPanel()" x-init="fetchNotifications()" class="fixed inset-y-0 right-0 w-80 bg-white dark:bg-slate-950 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 border-l border-slate-200 dark:border-slate-800" style="visibility: hidden;">
             <div class="h-16 flex items-center justify-between px-6 border-b border-slate-100 dark:border-slate-800">
-                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
+                <div class="flex items-center gap-2">
+                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">Notifications</h3>
+                    <span x-show="notifications.length > 0" class="px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full" x-text="notifications.length"></span>
+                </div>
                 <button id="notif-close" class="text-slate-500 hover:text-slate-900 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
             </div>
-            <div class="p-4 space-y-4 overflow-y-auto h-[calc(100vh-64px)]">
-                <div class="p-3 bg-brand-50 dark:bg-brand-900/10 rounded-lg border-l-4 border-brand-500">
-                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Payroll Completed</p>
-                    <p class="text-xs text-slate-600 dark:text-slate-400">January 2026 payroll has been processed successfully.</p>
-                    <div class="mt-2 flex gap-2">
-                        <button class="text-xs text-brand-600 font-medium hover:underline">View</button>
-                    </div>
+            <div class="p-4 space-y-3 overflow-y-auto h-[calc(100vh-64px)]">
+                <!-- Loading State -->
+                <div x-show="loading" class="flex items-center justify-center py-8">
+                    <div class="animate-spin w-6 h-6 border-2 border-brand-500 border-t-transparent rounded-full"></div>
                 </div>
-                <div class="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800">
-                    <p class="text-sm font-bold text-slate-900 dark:text-white mb-1">Approval Required</p>
-                    <p class="text-xs text-slate-600 dark:text-slate-400">2 leave requests are pending your approval.</p>
-                    <div class="mt-2 flex gap-2">
-                        <button class="text-xs text-brand-600 font-medium hover:underline">Review</button>
-                    </div>
+                
+                <!-- Empty State -->
+                <div x-show="!loading && notifications.length === 0" class="text-center py-8">
+                    <i data-lucide="bell-off" class="w-12 h-12 text-slate-300 mx-auto mb-4"></i>
+                    <p class="text-sm text-slate-500">No notifications</p>
                 </div>
+                
+                <!-- Notification Items -->
+                <template x-for="notif in notifications" :key="notif.id">
+                    <div class="p-3 rounded-lg border-l-4 transition-colors"
+                        :class="{
+                            'bg-green-50 dark:bg-green-900/10 border-green-500': notif.color === 'green',
+                            'bg-amber-50 dark:bg-amber-900/10 border-amber-500': notif.color === 'amber',
+                            'bg-red-50 dark:bg-red-900/10 border-red-500': notif.color === 'red',
+                            'bg-blue-50 dark:bg-blue-900/10 border-blue-500': notif.color === 'blue',
+                            'bg-brand-50 dark:bg-brand-900/10 border-brand-500': notif.color === 'brand'
+                        }">
+                        <div class="flex items-start gap-3">
+                            <i :data-lucide="notif.icon" class="w-5 h-5 shrink-0 mt-0.5"
+                                :class="{
+                                    'text-green-600': notif.color === 'green',
+                                    'text-amber-600': notif.color === 'amber',
+                                    'text-red-600': notif.color === 'red',
+                                    'text-blue-600': notif.color === 'blue',
+                                    'text-brand-600': notif.color === 'brand'
+                                }"></i>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-bold text-slate-900 dark:text-white" x-text="notif.title"></p>
+                                <p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5" x-text="notif.message"></p>
+                                <div class="mt-2 flex items-center gap-3">
+                                    <a :href="notif.action_url" class="text-xs font-medium hover:underline"
+                                        :class="{
+                                            'text-green-600': notif.color === 'green',
+                                            'text-amber-600': notif.color === 'amber',
+                                            'text-red-600': notif.color === 'red',
+                                            'text-blue-600': notif.color === 'blue',
+                                            'text-brand-600': notif.color === 'brand'
+                                        }" x-text="notif.action"></a>
+                                    <span class="text-xs text-slate-400" x-text="formatTime(notif.timestamp)"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+                
+                <!-- Refresh Button -->
+                <button @click="fetchNotifications()" x-show="!loading" class="w-full py-2 text-xs text-slate-500 hover:text-slate-700 flex items-center justify-center gap-2">
+                    <i data-lucide="refresh-cw" class="w-3 h-3"></i> Refresh
+                </button>
             </div>
         </div>
         
@@ -819,6 +1279,12 @@ $master_bonuses = [
                             :class="view === 'reports' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm ring-1 ring-slate-950/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/50 dark:hover:bg-slate-800/50'" 
                             class="px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 whitespace-nowrap">
                             <i data-lucide="bar-chart-3" class="w-4 h-4"></i> Reports
+                        </button>
+                        
+                        <button @click="changeView('deductions')" 
+                            :class="view === 'deductions' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm ring-1 ring-slate-950/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/50 dark:hover:bg-slate-800/50'" 
+                            class="px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 whitespace-nowrap">
+                            <i data-lucide="receipt" class="w-4 h-4"></i> Deductions
                         </button>
                     </div>
                 </div>
@@ -902,9 +1368,8 @@ $master_bonuses = [
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Payroll Type</label>
-                                <select class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5">
-                                    <option>Regular Monthly</option>
-                                    <option>Supplementary (Bonus/Arrears)</option>
+                                <select x-model="payrollType" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-brand-500 focus:border-brand-500 transition-colors shadow-sm text-sm p-2.5">
+                                    <option value="regular">Regular Monthly</option>
                                 </select>
                             </div>
                             <div>
@@ -1005,24 +1470,51 @@ $master_bonuses = [
                         <table class="w-full text-left text-xs payroll-table">
                             <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 font-bold sticky-header shadow-sm">
                                 <tr>
+                                    <!-- S/N Column -->
+                                    <th class="sticky-col-sn bg-slate-100 dark:bg-slate-900 w-[50px] text-center">S/N</th>
                                     <!-- Sticky Columns -->
-                                    <th class="sticky-col-left sticky-corner bg-slate-100 dark:bg-slate-900 min-w-[200px]">Employee</th>
+                                    <th class="sticky-col-left sticky-corner bg-slate-100 dark:bg-slate-900 min-w-[200px]">
+                                        <div class="flex items-center justify-between">
+                                            <span x-text="hideEmployeeNames ? 'Employee ID' : 'Employee'"></span>
+                                            <button @click="hideEmployeeNames = !hideEmployeeNames" 
+                                                class="ml-2 p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+                                                :title="hideEmployeeNames ? 'Show Names' : 'Hide Names (Show ID Only)'">
+                                                <i :data-lucide="hideEmployeeNames ? 'eye' : 'eye-off'" class="w-3 h-3 text-slate-500"></i>
+                                            </button>
+                                        </div>
+                                    </th>
                                     
-                                    <!-- Earnings Group -->
+                                    <!-- Employee Info Toggle Column -->
+                                    <th class="bg-slate-50 dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800" 
+                                        @click="showEmployeeInfo = !showEmployeeInfo" title="Toggle Employee Details">
+                                        <div class="flex items-center gap-1 text-slate-500">
+                                            <i :data-lucide="showEmployeeInfo ? 'chevron-down' : 'chevron-right'" class="w-3 h-3"></i>
+                                            <span class="text-[10px]">Info</span>
+                                        </div>
+                                    </th>
+                                    
+                                    <!-- Collapsible Employee Info Columns -->
+                                    <th x-show="showEmployeeInfo" x-transition class="bg-slate-50 dark:bg-slate-900 min-w-[120px] text-slate-600">Designation</th>
+                                    <th x-show="showEmployeeInfo" x-transition class="bg-slate-50 dark:bg-slate-900 min-w-[100px] text-slate-600">Bank</th>
+                                    <th x-show="showEmployeeInfo" x-transition class="bg-slate-50 dark:bg-slate-900 min-w-[120px] text-slate-600 border-r border-slate-200 dark:border-slate-700">Account No</th>
+                                    
+                                    <!-- Earnings Group (Fixed columns) -->
                                     <th class="bg-green-50/50 dark:bg-green-900/10 border-l border-slate-200 dark:border-slate-800 min-w-[100px]">Basic</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Housing</th>
                                     <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px]">Transport</th>
-                                    <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-green-700 dark:text-green-400">Bonus</th>
-                                    <th class="bg-orange-50/50 dark:bg-orange-900/10 min-w-[80px] text-orange-600 dark:text-orange-400">OT</th>
+                                    <th class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-emerald-600 dark:text-emerald-400">Others</th>
+                                    <th x-show="statutoryFlags.showBonus" class="bg-green-50/50 dark:bg-green-900/10 min-w-[100px] text-green-700 dark:text-green-400">Bonus</th>
+                                    <th x-show="overtimeConfig.enabled || dataHasOvertime" class="bg-orange-50/50 dark:bg-orange-900/10 min-w-[80px] text-orange-600 dark:text-orange-400">OT</th>
                                     <th class="bg-slate-200 dark:bg-slate-800 min-w-[120px]">Gross Pay</th>
                                     
                                     <!-- Deductions Group -->
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 border-l border-slate-200 dark:border-slate-800 min-w-[100px]">PAYE</th>
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">Pension</th>
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">NHIS</th>
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-amber-600 dark:text-amber-400">Lateness</th>
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Loan</th>
-                                    <th class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Deductions</th>
+                                    <th x-show="statutoryFlags.paye" class="bg-red-50/50 dark:bg-red-900/10 border-l border-slate-200 dark:border-slate-800 min-w-[100px]">PAYE</th>
+                                    <th x-show="statutoryFlags.pension" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">Pension</th>
+                                    <th x-show="statutoryFlags.nhf" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">NHF</th>
+                                    <th x-show="statutoryFlags.nhis" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px]">NHIS</th>
+                                    <th x-show="statutoryFlags.showLateness" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-amber-600 dark:text-amber-400">Lateness</th>
+                                    <th x-show="statutoryFlags.showLoan" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Loan</th>
+                                    <th x-show="statutoryFlags.showDeductions" class="bg-red-50/50 dark:bg-red-900/10 min-w-[100px] text-red-700 dark:text-red-400">Deductions</th>
                                     
                                     <!-- Summary -->
                                     <th class="bg-brand-50 dark:bg-brand-900/20 border-l border-slate-200 dark:border-slate-800 text-brand-700 dark:text-white min-w-[140px]">Net Pay</th>
@@ -1030,35 +1522,48 @@ $master_bonuses = [
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                                <template x-for="emp in sheetData" :key="emp.id">
+                                <template x-for="(emp, empIndex) in sheetData" :key="emp.id">
                                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-900">
+                                        <!-- S/N Cell -->
+                                        <td class="bg-white dark:bg-slate-950 text-center font-medium text-slate-500" x-text="empIndex + 1"></td>
                                         <td class="sticky-col-left bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-700 font-medium">
-                                            <div x-text="emp.first_name + ' ' + emp.last_name"></div>
-                                            <span class="text-[10px] text-slate-400" x-text="emp.payroll_id || 'N/A'"></span>
+                                            <template x-if="!hideEmployeeNames">
+                                                <div>
+                                                    <div x-text="emp.first_name + ' ' + emp.last_name"></div>
+                                                    <span class="text-[10px] text-slate-400" x-text="emp.payroll_id || 'N/A'"></span>
+                                                </div>
+                                            </template>
+                                            <template x-if="hideEmployeeNames">
+                                                <div class="font-mono text-slate-700 dark:text-slate-300" x-text="emp.payroll_id || 'N/A'"></div>
+                                            </template>
                                         </td>
-                                        <!-- Earnings -->
-                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.basic)"></td>
-                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.housing)"></td>
-                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.transport)"></td>
-                                        <td class="bg-green-50/5 dark:bg-transparent text-green-600" x-text="formatCurrency(emp.breakdown.bonus || 0)"></td>
-                                        <!-- OT Column -->
-                                        <td class="bg-orange-50/10 dark:bg-transparent">
-                                            <div class="flex items-center gap-1">
-                                                <span x-show="(emp.breakdown.overtime_hours || 0) > 0" class="text-orange-600 font-medium" x-text="(emp.breakdown.overtime_hours || 0) + 'h'"></span>
-                                                <button @click="openOvertimeModal(emp)" class="px-1.5 py-0.5 text-[10px] bg-orange-100 text-orange-600 rounded hover:bg-orange-200 transition-colors" title="Add/Edit Overtime">
-                                                    <i data-lucide="clock" class="w-3 h-3 inline"></i>
-                                                </button>
-                                            </div>
-                                        </td>
+                                        
+                                        <!-- Employee Info Toggle Cell (placeholder) -->
+                                        <td class="bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-slate-700"></td>
+                                        
+                                        <!-- Collapsible Employee Info Cells -->
+                                        <td x-show="showEmployeeInfo" x-transition class="bg-slate-50/50 dark:bg-slate-900/30 text-slate-600 text-[10px]" x-text="emp.designation || '—'"></td>
+                                        <td x-show="showEmployeeInfo" x-transition class="bg-slate-50/50 dark:bg-slate-900/30 text-slate-600 text-[10px]" x-text="emp.bank_name || '—'"></td>
+                                        <td x-show="showEmployeeInfo" x-transition class="bg-slate-50/50 dark:bg-slate-900/30 text-slate-600 text-[10px] border-r border-slate-200 dark:border-slate-700" x-text="emp.account_number || '—'"></td>
+                                        
+                                        <!-- Earnings (Fixed columns) -->
+                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.basic || 0)"></td>
+                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.housing || 0)"></td>
+                                        <td class="bg-green-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.transport || 0)"></td>
+                                        <td class="bg-green-50/5 dark:bg-transparent text-emerald-600" x-text="formatCurrency(getOtherAllowances(emp))"></td>
+                                        <td x-show="statutoryFlags.showBonus" class="bg-green-50/5 dark:bg-transparent text-green-600" x-text="formatCurrency(emp.breakdown.bonus || 0)"></td>
+                                        <!-- OT Column (shows overtime PAY value) -->
+                                        <td x-show="overtimeConfig.enabled || dataHasOvertime" class="bg-orange-50/10 dark:bg-transparent text-orange-600" x-text="formatCurrency(Number(emp.breakdown.overtime_pay || 0))"></td>
                                         <td class="font-bold bg-slate-50 dark:bg-slate-900" x-text="formatCurrency(emp.gross_salary)"></td>
                                         
                                         <!-- Deductions -->
-                                        <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.paye)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.pension)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhis)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent text-amber-600" x-text="formatCurrency(emp.breakdown.lateness || 0)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.loan)"></td>
-                                        <td class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.custom_deductions || 0)"></td>
+                                        <td x-show="statutoryFlags.paye" class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.paye)"></td>
+                                        <td x-show="statutoryFlags.pension" class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.pension)"></td>
+                                        <td x-show="statutoryFlags.nhf" class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhf || 0)"></td>
+                                        <td x-show="statutoryFlags.nhis" class="bg-red-50/5 dark:bg-transparent" x-text="formatCurrency(emp.breakdown.nhis)"></td>
+                                        <td x-show="statutoryFlags.showLateness" class="bg-red-50/5 dark:bg-transparent text-amber-600" x-text="formatCurrency(emp.breakdown.lateness || 0)"></td>
+                                        <td x-show="statutoryFlags.showLoan" class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.loan)"></td>
+                                        <td x-show="statutoryFlags.showDeductions" class="bg-red-50/5 dark:bg-transparent text-red-500" x-text="formatCurrency(emp.breakdown.custom_deductions || 0)"></td>
                                         
                                         <!-- Net -->
                                         <td class="font-bold bg-brand-50/30 text-brand-700 dark:text-white border-l border-slate-200 dark:border-slate-800" x-text="formatCurrency(emp.net_pay)"></td>
@@ -1085,37 +1590,88 @@ $master_bonuses = [
                     <!-- ADJUSTMENT MODAL -->
                     <div x-show="adjustmentModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
                         <div class="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" @click="adjustmentModalOpen = false"></div>
-                        <div class="relative bg-white dark:bg-slate-950 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" @click.stop>
-                            <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                        <div class="relative bg-white dark:bg-slate-950 rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col overflow-hidden" @click.stop>
+                            <div class="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-shrink-0">
                                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Add One-Time Adjustment</h3>
                                 <button @click="adjustmentModalOpen = false" class="text-slate-400 hover:text-slate-600">
                                     <i data-lucide="x" class="w-5 h-5"></i>
                                 </button>
                             </div>
-                            <div class="p-6 space-y-4">
-                                <div class="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg">
+                            <div class="p-5 space-y-3 overflow-y-auto flex-1">
+                                <div class="p-2.5 bg-slate-50 dark:bg-slate-900 rounded-lg">
                                     <p class="text-xs text-slate-500">Employee</p>
                                     <p class="font-bold text-slate-900 dark:text-white" x-text="adjustmentForm.employee_name"></p>
                                 </div>
                                 
                                 <div>
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Type</label>
-                                    <div class="grid grid-cols-2 gap-2">
-                                        <label class="flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'bonus' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'">
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <label class="flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'bonus' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'">
                                             <input type="radio" x-model="adjustmentForm.type" value="bonus" class="text-green-600">
                                             <span class="text-sm font-medium">Bonus</span>
                                         </label>
-                                        <label class="flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'deduction' ? 'border-red-500 bg-red-50 dark:bg-red-900/20' : 'border-slate-200 dark:border-slate-700'">
+                                        <label class="flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'deduction' ? 'border-red-500 bg-red-50 dark:bg-red-900/20' : 'border-slate-200 dark:border-slate-700'">
                                             <input type="radio" x-model="adjustmentForm.type" value="deduction" class="text-red-600">
                                             <span class="text-sm font-medium">Deduction</span>
                                         </label>
+                                        <label class="flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors" :class="adjustmentForm.type === 'overtime' ? 'border-orange-500 bg-orange-50 dark:bg-orange-900/20' : 'border-slate-200 dark:border-slate-700'">
+                                            <input type="radio" x-model="adjustmentForm.type" value="overtime" class="text-orange-600">
+                                            <span class="text-sm font-medium">Overtime</span>
+                                        </label>
                                     </div>
+                                </div>
+                                
+                                <!-- Overtime Section -->
+                                <div x-show="adjustmentForm.type === 'overtime'" class="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800 space-y-3">
+                                    <!-- Loading indicator -->
+                                    <div x-show="currentOTConfig.loading" class="flex items-center gap-2 text-sm text-orange-600">
+                                        <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                        Loading shift configuration...
+                                    </div>
+                                    
+                                    <template x-if="!currentOTConfig.loading">
+                                        <div class="space-y-3">
+                                            <!-- Shift indicator -->
+                                            <div x-show="currentOTConfig.shiftName" class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 rounded-md px-2 py-1 border border-slate-200 dark:border-slate-700">
+                                                <i data-lucide="clock" class="w-3 h-3"></i>
+                                                <span>Shift: <strong x-text="currentOTConfig.shiftName"></strong></span>
+                                            </div>
+                                            
+                                            <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Overtime Hours</label>
+                                            <div class="flex items-center gap-3">
+                                                <input type="number" x-model.number="adjustmentForm.overtime_hours" @input="$nextTick(() => calculateOvertimePay())" class="flex-1 rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" placeholder="0" step="0.5" min="0">
+                                                <span class="text-sm text-slate-500">hours</span>
+                                            </div>
+                                            
+                                            <!-- Live Calculation Preview -->
+                                            <div x-show="adjustmentForm.overtime_hours > 0" class="p-3 bg-white dark:bg-slate-800 rounded-lg border border-orange-100 dark:border-orange-900">
+                                                <div class="flex justify-between text-sm mb-1">
+                                                    <span class="text-slate-500">Hourly Rate:</span>
+                                                    <span class="font-medium" x-text="formatCurrency(adjustmentForm.hourly_rate || 0)"></span>
+                                                </div>
+                                                <div class="flex justify-between text-sm mb-1">
+                                                    <span class="text-slate-500">OT Rate (<span x-text="currentOTConfig.rate"></span>x):</span>
+                                                    <span class="font-medium" x-text="formatCurrency((adjustmentForm.hourly_rate || 0) * currentOTConfig.rate)"></span>
+                                                </div>
+                                                <div class="flex justify-between text-sm font-bold text-orange-600 pt-2 border-t border-orange-100 dark:border-orange-800">
+                                                    <span>Total OT Pay:</span>
+                                                    <span x-text="formatCurrency((adjustmentForm.overtime_hours || 0) * (adjustmentForm.hourly_rate || 0) * currentOTConfig.rate)"></span>
+                                                </div>
+                                            </div>
+                                            
+                                            <p class="text-xs text-orange-600">
+                                                <i data-lucide="info" class="w-3 h-3 inline"></i>
+                                                Overtime calculated at <strong x-text="currentOTConfig.rate + 'x'"></strong> hourly rate. 
+                                                Hourly = Gross ÷ (<span x-text="currentOTConfig.dailyHours"></span>hrs × <span x-text="currentOTConfig.monthlyDays"></span>days)
+                                            </p>
+                                        </div>
+                                    </template>
                                 </div>
                                 
                                 <div x-show="adjustmentForm.type === 'bonus'">
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Select Bonus Type</label>
                                     <div class="relative">
-                                        <select x-model="adjustmentForm.name" @change="if(adjustmentForm.name === 'Others') adjustmentForm.customName = ''" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm">
+                                        <select x-model="adjustmentForm.name" @change="if(adjustmentForm.name === 'Others') adjustmentForm.customName = ''" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm">
                                             <option value="">-- Select a bonus type --</option>
                                             <optgroup label="Performance & Productivity">
                                                 <template x-for="bonus in masterBonuses.slice(0, 7)"><option :value="bonus" x-text="bonus"></option></template>
@@ -1145,27 +1701,59 @@ $master_bonuses = [
                                     </div>
                                     <!-- Custom name input when 'Others' is selected -->
                                     <div x-show="adjustmentForm.name === 'Others'" class="mt-2">
-                                        <input type="text" x-model="adjustmentForm.customName" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="Enter custom bonus name...">
+                                        <input type="text" x-model="adjustmentForm.customName" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" placeholder="Enter custom bonus name...">
                                     </div>
                                 </div>
                                 
                                 <div x-show="adjustmentForm.type === 'deduction'">
-                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Name/Description</label>
-                                    <input type="text" x-model="adjustmentForm.name" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="e.g. Loan Repayment, Salary Advance">
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Deduction Type</label>
+                                    <div class="relative">
+                                        <!-- Selected deduction display -->
+                                        <div x-show="adjustmentForm.name && adjustmentForm.name !== 'Others'" class="flex items-center gap-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                                            <span class="flex-1 text-sm font-medium text-red-700 dark:text-red-300" x-text="adjustmentForm.name"></span>
+                                            <button type="button" @click="adjustmentForm.name = ''; deductionSearch = ''" class="text-red-500 hover:text-red-700">
+                                                <i data-lucide="x" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                        <!-- Search input -->
+                                        <div x-show="!adjustmentForm.name || adjustmentForm.name === 'Others'">
+                                            <input type="text" 
+                                                x-model="deductionSearch" 
+                                                @input="filterDeductions()"
+                                                @focus="showDeductionList = true; filterDeductions()"
+                                                @click.stop
+                                                class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" 
+                                                placeholder="Search deduction type...">
+                                            <!-- Dropdown list -->
+                                            <div x-show="showDeductionList && filteredDeductions.length > 0" 
+                                                @click.away="showDeductionList = false"
+                                                class="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 max-h-48 overflow-y-auto">
+                                                <template x-for="ded in filteredDeductions" :key="ded">
+                                                    <button type="button" @click="selectDeduction(ded)" 
+                                                        class="w-full px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                                                        x-text="ded"></button>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- Custom name input when 'Others' is selected -->
+                                    <div x-show="adjustmentForm.name === 'Others'" class="mt-2">
+                                        <input type="text" x-model="adjustmentForm.customName" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" placeholder="Enter custom deduction name...">
+                                    </div>
                                 </div>
                                 
-                                <div>
+                                <div x-show="adjustmentForm.type !== 'overtime'">
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Amount (₦)</label>
-                                    <input type="number" x-model="adjustmentForm.amount" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" placeholder="0.00" step="100">
+                                    <input type="number" x-model="adjustmentForm.amount" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" placeholder="0.00" step="100">
                                 </div>
                                 
                                 <!-- Taxable Checkbox with PIT Notice -->
-                                <div x-show="adjustmentForm.type === 'bonus'" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
-                                    <label class="flex items-start gap-3 cursor-pointer">
+                                <div x-show="adjustmentForm.type === 'bonus'" class="p-2.5 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                                    <label class="flex items-start gap-2 cursor-pointer">
                                         <input type="checkbox" x-model="adjustmentForm.taxable" class="mt-0.5 text-amber-600 rounded" checked>
                                         <div>
                                             <span class="text-sm font-medium text-slate-800 dark:text-slate-200">Taxable Bonus</span>
-                                            <p class="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                                            <p class="text-xs text-amber-700 dark:text-amber-400">
                                                 <i data-lucide="info" class="w-3 h-3 inline"></i>
                                                 Per PIT Act, all bonuses are taxable income. Only uncheck if you have verified tax exemption.
                                             </p>
@@ -1175,10 +1763,10 @@ $master_bonuses = [
                                 
                                 <div>
                                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Notes (Optional)</label>
-                                    <textarea x-model="adjustmentForm.notes" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-sm" rows="2" placeholder="Add notes..."></textarea>
+                                    <textarea x-model="adjustmentForm.notes" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" rows="2" placeholder="Add notes..."></textarea>
                                 </div>
                             </div>
-                            <div class="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3">
+                            <div class="px-5 py-3 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 flex-shrink-0">
                                 <button @click="adjustmentModalOpen = false" class="px-4 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
                                 <button @click="saveAdjustment()" :disabled="loading" class="px-4 py-2 bg-brand-600 text-white text-sm font-bold rounded-lg hover:bg-brand-700 disabled:opacity-50">
                                     <span x-show="!loading">Save Adjustment</span>
@@ -1738,33 +2326,115 @@ $master_bonuses = [
                 </div>
 
                 <!-- VIEW 4: PREVIEW & VALIDATION -->
-                <div x-show="view === 'preview'" x-cloak x-transition.opacity class="max-w-5xl mx-auto">
-                    <h2 class="text-xl font-bold text-slate-900 dark:text-white mb-6">Payroll Preview & Validation</h2>
+                <div x-show="view === 'preview'" x-cloak x-transition.opacity class="max-w-6xl mx-auto">
+                    <!-- Header with Period Info -->
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900 dark:text-white">Payroll Preview & Validation</h2>
+                            <p class="text-sm text-slate-500">
+                                <span x-text="getMonthName(currentPeriod.month)"></span> <span x-text="currentPeriod.year"></span> • 
+                                <span x-text="payrollSheet.length"></span> employees
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="px-3 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 text-xs font-bold rounded-full uppercase">Draft</span>
+                            <span class="text-xs text-slate-500">Run ID: <span x-text="lastRunId || 'N/A'"></span></span>
+                        </div>
+                    </div>
                     
-                    <!-- Totals Grid -->
-                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-                            <p class="text-xs text-slate-500 uppercase truncate">Gross Pay</p>
-                            <p class="text-lg font-bold text-slate-900 dark:text-white truncate" x-text="formatCurrency(totals.gross)" :title="formatCurrency(totals.gross)"></p>
+                    <!-- Summary Cards Grid -->
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
+                        <!-- Employees -->
+                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i data-lucide="users" class="w-4 h-4 text-slate-400"></i>
+                                <p class="text-xs text-slate-500 uppercase">Employees</p>
+                            </div>
+                            <p class="text-2xl font-bold text-slate-900 dark:text-white" x-text="payrollSheet.length"></p>
                         </div>
-                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-                            <p class="text-xs text-slate-500 uppercase truncate">Total Deductions</p>
-                            <p class="text-lg font-bold text-red-600 dark:text-red-400 truncate" x-text="formatCurrency(totals.deductions)" :title="formatCurrency(totals.deductions)"></p>
+                        <!-- Gross Pay -->
+                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i data-lucide="wallet" class="w-4 h-4 text-green-500"></i>
+                                <p class="text-xs text-slate-500 uppercase">Gross Pay</p>
+                            </div>
+                            <p class="text-lg font-bold text-slate-900 dark:text-white truncate" x-text="formatCurrency(totals.gross)"></p>
                         </div>
-                        <!-- Summaries below can be calculated from breakdown sum if needed, but for now we use placeholder or 0 if not pre-calc -->
-                        <!-- Actually totals.deductions includes PAYE+Pension+NHIS. We can't split easily without looping. -->
-                        <!-- Let's just show Deductions again or omit specifics if not available in totals object. -->
-                        <!-- Or better: We bind to specific sub-totals if we added them to totals response. I only added gross, deductions, net. -->
-                        <!-- Suggestion: Just show gross, deductions, net for MVP reliability. -->
+                        <!-- Total Deductions -->
+                        <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i data-lucide="minus-circle" class="w-4 h-4 text-red-500"></i>
+                                <p class="text-xs text-slate-500 uppercase">Deductions</p>
+                            </div>
+                            <p class="text-lg font-bold text-red-600 truncate" x-text="formatCurrency(totals.deductions)"></p>
+                        </div>
+                        <!-- Net Pay (highlighted) -->
+                        <div class="bg-brand-50 dark:bg-brand-900/20 p-4 rounded-xl border border-brand-200 dark:border-brand-800 col-span-2">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i data-lucide="banknote" class="w-4 h-4 text-brand-600"></i>
+                                <p class="text-xs text-brand-600 uppercase font-bold">Total Net Pay</p>
+                            </div>
+                            <p class="text-2xl font-bold text-brand-700 dark:text-brand-300" x-text="formatCurrency(totals.net)"></p>
+                        </div>
+                    </div>
+                    
+                    <!-- Two Column Layout: Statutory + Department -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                        <!-- Statutory Breakdown -->
+                        <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                            <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                                <i data-lucide="landmark" class="w-5 h-5 text-slate-400"></i>
+                                <h3 class="font-bold text-slate-900 dark:text-white">Statutory Contributions</h3>
+                            </div>
+                            <div class="p-4 space-y-3">
+                                <div x-show="statutoryFlags.paye" class="flex justify-between text-sm">
+                                    <span class="text-slate-600 dark:text-slate-400">PAYE (Tax)</span>
+                                    <span class="font-bold text-slate-900 dark:text-white" x-text="formatCurrency(calculateStatutoryTotal('paye'))"></span>
+                                </div>
+                                <div x-show="statutoryFlags.pension" class="flex justify-between text-sm">
+                                    <span class="text-slate-600 dark:text-slate-400">Pension (Employee)</span>
+                                    <span class="font-bold text-slate-900 dark:text-white" x-text="formatCurrency(calculateStatutoryTotal('pension'))"></span>
+                                </div>
+                                <div x-show="statutoryFlags.nhf" class="flex justify-between text-sm">
+                                    <span class="text-slate-600 dark:text-slate-400">NHF</span>
+                                    <span class="font-bold text-slate-900 dark:text-white" x-text="formatCurrency(calculateStatutoryTotal('nhf'))"></span>
+                                </div>
+                                <div x-show="statutoryFlags.nhis" class="flex justify-between text-sm">
+                                    <span class="text-slate-600 dark:text-slate-400">NHIS</span>
+                                    <span class="font-bold text-slate-900 dark:text-white" x-text="formatCurrency(calculateStatutoryTotal('nhis'))"></span>
+                                </div>
+                                <div class="border-t border-slate-100 dark:border-slate-800 pt-3 flex justify-between text-sm">
+                                    <span class="font-medium text-slate-700 dark:text-slate-300">Total Statutory</span>
+                                    <span class="font-bold text-red-600" x-text="formatCurrency(getActiveStatutoryTotal())"></span>
+                                </div>
+                            </div>
+                        </div>
                         
-                         <div class="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 col-span-2 bg-brand-50 dark:bg-brand-900/10 border-brand-200 dark:border-brand-900/30 overflow-hidden">
-                            <p class="text-xs text-brand-600 uppercase font-bold truncate">Total Net Pay Cost</p>
-                            <p class="text-2xl font-bold text-brand-700 dark:text-brand-300 truncate" x-text="formatCurrency(totals.net)" :title="formatCurrency(totals.net)"></p>
+                        <!-- Department Breakdown -->
+                        <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                            <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                                <i data-lucide="building-2" class="w-5 h-5 text-slate-400"></i>
+                                <h3 class="font-bold text-slate-900 dark:text-white">Department Breakdown</h3>
+                            </div>
+                            <div class="p-4 max-h-48 overflow-y-auto">
+                                <template x-for="dept in getDepartmentBreakdown()" :key="dept.name">
+                                    <div class="flex justify-between text-sm py-2 border-b border-slate-50 dark:border-slate-800 last:border-0">
+                                        <div class="flex items-center gap-2">
+                                            <span class="text-slate-600 dark:text-slate-400" x-text="dept.name || 'Unassigned'"></span>
+                                            <span class="text-xs text-slate-400" x-text="'(' + dept.count + ')'"></span>
+                                        </div>
+                                        <span class="font-bold text-slate-900 dark:text-white" x-text="formatCurrency(dept.netPay)"></span>
+                                    </div>
+                                </template>
+                                <div x-show="getDepartmentBreakdown().length === 0" class="text-sm text-slate-500 text-center py-4">
+                                    No department data available
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Exceptions Panel -->
-                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-900/30 overflow-hidden mb-8" x-show="anomalies.length > 0">
+                    <!-- Anomalies Panel -->
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-900/30 overflow-hidden mb-6" x-show="anomalies.length > 0">
                         <div class="p-4 bg-red-50 dark:bg-red-900/10 border-b border-red-100 dark:border-red-900/20 flex items-center gap-2">
                             <i data-lucide="alert-triangle" class="w-5 h-5 text-red-600"></i>
                             <h3 class="font-bold text-red-800 dark:text-red-300" x-text="'Detected Anomalies (' + anomalies.length + ')'"></h3>
@@ -1778,19 +2448,25 @@ $master_bonuses = [
                             </template>
                         </div>
                     </div>
-                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-green-200 dark:border-green-900/30 overflow-hidden mb-8" x-show="anomalies.length === 0">
-                         <div class="p-4 bg-green-50 dark:bg-green-900/10 border-b border-green-100 dark:border-green-900/20 flex items-center gap-2">
-                            <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
-                            <h3 class="font-bold text-green-800 dark:text-green-300">No Anomalies Detected</h3>
-                        </div>
-                        <div class="p-4 text-sm text-slate-600 dark:text-slate-400">
-                            Payroll data looks consistent with rules. Proceed with validation.
+                    <!-- No Anomalies -->
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-green-200 dark:border-green-900/30 overflow-hidden mb-6" x-show="anomalies.length === 0">
+                         <div class="p-4 bg-green-50 dark:bg-green-900/10 flex items-center gap-3">
+                            <i data-lucide="check-circle" class="w-6 h-6 text-green-600"></i>
+                            <div>
+                                <h3 class="font-bold text-green-800 dark:text-green-300">No Anomalies Detected</h3>
+                                <p class="text-sm text-green-600 dark:text-green-400">Payroll data looks consistent with rules. Proceed with validation.</p>
+                            </div>
                         </div>
                     </div>
 
+                    <!-- Action Buttons -->
                     <div class="flex justify-between">
-                        <button @click="changeView('sheet')" class="px-6 py-2 text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 font-medium">Back to Sheet</button>
-                        <button @click="changeView('approval')" class="px-6 py-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-lg font-bold shadow-lg hover:opacity-90">Submit for Approval</button>
+                        <button @click="changeView('sheet')" class="px-6 py-2.5 text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 font-medium flex items-center gap-2">
+                            <i data-lucide="arrow-left" class="w-4 h-4"></i> Back to Sheet
+                        </button>
+                        <button @click="changeView('approval')" class="px-6 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-lg font-bold shadow-lg hover:opacity-90 flex items-center gap-2">
+                            Submit for Approval <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                        </button>
                     </div>
                 </div>
 
@@ -1818,7 +2494,9 @@ $master_bonuses = [
                             <textarea class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-3 text-sm focus:ring-brand-500" rows="3" placeholder="Approval notes (optional)..."></textarea>
                             
                             <div class="flex gap-4">
-                                <button class="flex-1 py-3 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/10 font-bold transition-colors">Reject Payroll</button>
+                                <button @click="rejectPayroll()" :disabled="loading" class="flex-1 py-3 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/10 font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+                                    <i data-lucide="x-circle" class="w-4 h-4"></i> Reject Payroll
+                                </button>
                                 <button @click="approvePayroll()" class="flex-1 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 font-bold shadow-md shadow-green-500/30 transition-colors flex items-center justify-center gap-2">
                                     <span x-show="!loading"><i data-lucide="lock" class="w-4 h-4"></i> Approve & Post</span>
                                     <span x-show="loading">Processing...</span>
@@ -1829,28 +2507,164 @@ $master_bonuses = [
                 </div>
 
                 <!-- VIEW 6: PAYSLIPS -->
-                <div x-show="view === 'payslips'" x-cloak x-transition.opacity>
-                    <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-6">Employee Payslips</h2>
+                <div x-show="view === 'payslips'" x-cloak x-transition.opacity x-data="payslipsView()">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 dark:text-white">Employee Payslips</h2>
+                            <p class="text-sm text-slate-500">View and download individual employee payslips</p>
+                        </div>
+                        <button x-show="filteredPayslips.length > 0" @click="exportPayslipsList()" 
+                            class="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium flex items-center gap-2">
+                            <i data-lucide="download" class="w-4 h-4"></i> Export List
+                        </button>
+                    </div>
+                    
+                    <!-- Filters -->
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-5 mb-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <!-- Employee Search Autocomplete -->
+                            <div class="relative">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Employee</label>
+                                <!-- Selected employee badge -->
+                                <div x-show="selectedEmployee" class="flex items-center gap-2 p-2 bg-brand-50 dark:bg-brand-900/20 rounded-lg border border-brand-200 dark:border-brand-800">
+                                    <span class="flex-1 text-sm font-medium text-brand-700 dark:text-brand-300" x-text="selectedEmployee?.name"></span>
+                                    <button type="button" @click="clearEmployeeFilter()" class="text-brand-500 hover:text-brand-700">
+                                        <i data-lucide="x" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                                <!-- Search input -->
+                                <div x-show="!selectedEmployee">
+                                    <input type="text" 
+                                        x-model="employeeSearch" 
+                                        @input="searchEmployees()"
+                                        @focus="showEmployeeList = true"
+                                        @click.stop
+                                        class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm" 
+                                        placeholder="Search by name or ID...">
+                                    <!-- Dropdown -->
+                                    <div x-show="showEmployeeList && employeeResults.length > 0" 
+                                        @click.away="showEmployeeList = false"
+                                        class="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 max-h-48 overflow-y-auto">
+                                        <template x-for="emp in employeeResults" :key="emp.id">
+                                            <button type="button" @click="selectEmployee(emp)" 
+                                                class="w-full px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2">
+                                                <span class="font-medium" x-text="emp.name"></span>
+                                                <span class="text-slate-400 text-xs" x-text="'(' + emp.payroll_id + ')'"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Department Filter -->
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Department</label>
+                                <select x-model="filters.department" @change="applyFilters()" class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm">
+                                    <option value="">All Departments</option>
+                                    <?php foreach($departments as $dept): ?>
+                                    <option value="<?= htmlspecialchars($dept) ?>"><?= htmlspecialchars($dept) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            
+                            <!-- Period From -->
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Period From</label>
+                                <input type="month" x-model="filters.periodFrom" @change="applyFilters()" 
+                                    class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm">
+                            </div>
+                            
+                            <!-- Period To -->
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Period To</label>
+                                <input type="month" x-model="filters.periodTo" @change="applyFilters()" 
+                                    class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 text-sm">
+                            </div>
+                        </div>
+                        
+                        <!-- Quick Period Buttons -->
+                        <div class="flex flex-wrap gap-2 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                            <span class="text-xs text-slate-500 mr-2 self-center">Quick:</span>
+                            <button @click="setQuickPeriod('current')" class="px-3 py-1 text-xs rounded-full border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Current Month</button>
+                            <button @click="setQuickPeriod('last3')" class="px-3 py-1 text-xs rounded-full border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Last 3 Months</button>
+                            <button @click="setQuickPeriod('last6')" class="px-3 py-1 text-xs rounded-full border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Last 6 Months</button>
+                            <button @click="setQuickPeriod('year')" class="px-3 py-1 text-xs rounded-full border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">This Year</button>
+                            <button @click="clearFilters()" class="px-3 py-1 text-xs rounded-full text-red-600 border border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20">Clear All</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Results Summary -->
+                    <div class="flex items-center justify-between mb-4">
+                        <p class="text-sm text-slate-500">
+                            Showing <strong x-text="filteredPayslips.length"></strong> payslips
+                            <span x-show="filters.department || selectedEmployee || filters.periodFrom"> (filtered)</span>
+                        </p>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-slate-400">Sort:</span>
+                            <select x-model="sortBy" @change="sortPayslips()" class="text-xs border-0 bg-transparent text-slate-600 dark:text-slate-400">
+                                <option value="date_desc">Newest First</option>
+                                <option value="date_asc">Oldest First</option>
+                                <option value="name_asc">Name A-Z</option>
+                                <option value="amount_desc">Highest Pay</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Payslips Table -->
                     <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-                        <table class="w-full text-left text-sm">
+                        <!-- Loading State -->
+                        <div x-show="loading" class="p-8 text-center">
+                            <div class="animate-spin w-8 h-8 border-4 border-brand-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                            <p class="text-slate-500">Loading payslips...</p>
+                        </div>
+                        
+                        <!-- Empty State -->
+                        <div x-show="!loading && filteredPayslips.length === 0" class="p-8 text-center">
+                            <i data-lucide="file-x" class="w-12 h-12 text-slate-300 mx-auto mb-4"></i>
+                            <p class="text-slate-500">No payslips found matching your filters</p>
+                        </div>
+                        
+                        <!-- Data Table -->
+                        <table x-show="!loading && filteredPayslips.length > 0" class="w-full text-left text-sm">
                             <thead class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-500">
                                 <tr>
                                     <th class="p-4">Period</th>
                                     <th class="p-4">Employee</th>
-                                    <th class="p-4">Net Pay</th>
+                                    <th class="p-4">Department</th>
+                                    <th class="p-4 text-right">Gross</th>
+                                    <th class="p-4 text-right">Deductions</th>
+                                    <th class="p-4 text-right">Net Pay</th>
                                     <th class="p-4">Status</th>
-                                    <th class="p-4 text-center">Action</th>
+                                    <th class="p-4 text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                                <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
-                                    <td class="p-4"><?php echo date('M Y'); ?></td>
-                                    <td class="p-4 font-medium">John Doe</td>
-                                    <td class="p-4 font-bold text-slate-900 dark:text-white">₦ 207,500</td>
-                                    <td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold uppercase tracking-wider bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">Paid</span></td>
-                                    <td class="p-4 text-center"><button class="text-brand-600 hover:underline">View PDF</button></td>
-                                </tr>
-                                <!-- More rows -->
+                                <template x-for="slip in filteredPayslips" :key="slip.id">
+                                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                                        <td class="p-4" x-text="slip.period"></td>
+                                        <td class="p-4">
+                                            <span class="font-medium text-slate-900 dark:text-white" x-text="slip.employee_name"></span>
+                                            <span class="text-xs text-slate-400 ml-1" x-text="'(' + slip.payroll_id + ')'"></span>
+                                        </td>
+                                        <td class="p-4 text-slate-600 dark:text-slate-400" x-text="slip.department || '-'"></td>
+                                        <td class="p-4 text-right" x-text="formatCurrency(slip.gross_salary)"></td>
+                                        <td class="p-4 text-right text-red-600" x-text="formatCurrency(slip.total_deductions)"></td>
+                                        <td class="p-4 text-right font-bold text-green-600" x-text="formatCurrency(slip.net_pay)"></td>
+                                        <td class="p-4">
+                                            <span class="px-2 py-1 rounded text-xs font-bold uppercase tracking-wider"
+                                                :class="slip.status === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'"
+                                                x-text="slip.status === 'approved' ? 'Paid' : 'Pending'"></span>
+                                        </td>
+                                        <td class="p-4 text-center">
+                                            <div class="flex items-center justify-center gap-2">
+                                                <button @click="viewPayslip(slip)" class="text-brand-600 hover:text-brand-800 text-sm font-medium">View</button>
+                                                <button @click="downloadPayslip(slip)" class="text-slate-500 hover:text-slate-700 p-1">
+                                                    <i data-lucide="download" class="w-4 h-4"></i>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
                             </tbody>
                         </table>
                     </div>
@@ -1879,6 +2693,369 @@ $master_bonuses = [
                     </div>
                 </div>
 
+                <!-- VIEW 8: DEDUCTIONS BREAKDOWN -->
+                <div x-show="view === 'deductions'" x-cloak x-transition.opacity x-data="deductionsView()">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 dark:text-white">Attendance Deduction Breakdown</h2>
+                            <p class="text-sm text-slate-500">Review per-employee deductions for reconciliation</p>
+                        </div>
+                        <button x-show="selectedEmployee" @click="printReport()" class="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
+                            <i data-lucide="printer" class="w-4 h-4"></i> Print Report
+                        </button>
+                    </div>
+                    
+                    <!-- Filters -->
+                    <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-6 mb-6">
+                        <div class="flex flex-wrap gap-4 items-end">
+                            <!-- Employee Search Autocomplete -->
+                            <div class="flex-1 min-w-[250px] relative">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Search Employee</label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        x-model="searchQuery" 
+                                        @input.debounce.300ms="searchEmployees()"
+                                        @focus="showResults = true"
+                                        @keydown.arrow-down.prevent="highlightNext()"
+                                        @keydown.arrow-up.prevent="highlightPrev()"
+                                        @keydown.enter.prevent="selectHighlighted()"
+                                        @keydown.escape="showResults = false"
+                                        placeholder="Type name or ID to search..."
+                                        class="w-full px-4 py-2.5 pl-10 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                                    />
+                                    <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                    <button x-show="selectedEmployee" @click="clearSelection()" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500">
+                                        <i data-lucide="x" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                                
+                                <!-- Search Results Dropdown -->
+                                <div x-show="showResults && searchResults.length > 0" 
+                                     @click.outside="showResults = false"
+                                     x-transition
+                                     class="absolute z-50 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                    <template x-for="(emp, index) in searchResults" :key="emp.id">
+                                        <div @click="selectEmployee(emp)"
+                                             :class="highlightIndex === index ? 'bg-brand-50 dark:bg-brand-900/20' : ''"
+                                             class="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer border-b border-slate-100 dark:border-slate-700 last:border-0">
+                                            <div class="font-medium text-slate-900 dark:text-white" x-text="emp.name"></div>
+                                            <div class="text-xs text-slate-500" x-text="emp.payroll_id + ' • ' + emp.department"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                                
+                                <!-- No Results -->
+                                <div x-show="showResults && searchQuery.length >= 1 && searchResults.length === 0 && !searchLoading" 
+                                     class="absolute z-50 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-4 text-center text-slate-500">
+                                    No employees found
+                                </div>
+                                
+                                <!-- Loading -->
+                                <div x-show="searchLoading" 
+                                     class="absolute z-50 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-4 text-center text-slate-500">
+                                    Searching...
+                                </div>
+                            </div>
+                            
+                            <!-- Month Selector -->
+                            <div class="w-40">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Month</label>
+                                <select x-model="filterMonth" @change="fetchBreakdown()" class="w-full px-4 py-2.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                                    <option value="1">January</option>
+                                    <option value="2">February</option>
+                                    <option value="3">March</option>
+                                    <option value="4">April</option>
+                                    <option value="5">May</option>
+                                    <option value="6">June</option>
+                                    <option value="7">July</option>
+                                    <option value="8">August</option>
+                                    <option value="9">September</option>
+                                    <option value="10">October</option>
+                                    <option value="11">November</option>
+                                    <option value="12">December</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Year Selector -->
+                            <div class="w-28">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Year</label>
+                                <select x-model="filterYear" @change="fetchBreakdown()" class="w-full px-4 py-2.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                                    <?php for ($y = date('Y'); $y >= date('Y') - 2; $y--): ?>
+                                    <option value="<?php echo $y; ?>"><?php echo $y; ?></option>
+                                    <?php endfor; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- No Employee Selected -->
+                    <template x-if="!selectedEmployee">
+                        <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-12 text-center">
+                            <i data-lucide="users" class="w-16 h-16 mx-auto mb-4 text-slate-300 dark:text-slate-600"></i>
+                            <h3 class="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">Select an Employee</h3>
+                            <p class="text-slate-500">Choose an employee from the dropdown above to view their attendance deduction breakdown.</p>
+                        </div>
+                    </template>
+                    
+                    <!-- Employee Data -->
+                    <template x-if="selectedEmployee">
+                        <div>
+                            <!-- Employee Info Card -->
+                            <div class="bg-gradient-to-r from-brand-600 to-brand-700 rounded-xl p-6 mb-6 text-white">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                    <div>
+                                        <h2 class="text-xl font-bold" x-text="selectedEmployee.name"></h2>
+                                        <p class="text-brand-100 text-sm" x-text="selectedEmployee.payroll_id + ' • ' + (selectedEmployee.category || 'No Category')"></p>
+                                    </div>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                        <div class="bg-white/10 rounded-lg px-4 py-2">
+                                            <p class="text-brand-200 text-xs">Gross Salary</p>
+                                            <p class="font-bold" x-text="'₦' + Number(selectedEmployee.gross_salary).toLocaleString()"></p>
+                                        </div>
+                                        <div class="bg-white/10 rounded-lg px-4 py-2">
+                                            <p class="text-brand-200 text-xs">Working Days</p>
+                                            <p class="font-bold" x-text="selectedEmployee.working_days + ' days'"></p>
+                                        </div>
+                                        <div class="bg-white/10 rounded-lg px-4 py-2">
+                                            <p class="text-brand-200 text-xs">Daily Rate</p>
+                                            <p class="font-bold" x-text="'₦' + Number(selectedEmployee.daily_rate).toLocaleString()"></p>
+                                        </div>
+                                        <div class="bg-white/10 rounded-lg px-4 py-2">
+                                            <p class="text-brand-200 text-xs">Grace Period</p>
+                                            <p class="font-bold" x-text="selectedEmployee.grace_period + ' mins'"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Summary Cards -->
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                                <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+                                    <p class="text-xs text-slate-500 uppercase font-medium">Total Late Minutes</p>
+                                    <p class="text-2xl font-bold text-amber-600 mt-1" x-text="summary.total_late_minutes + ' mins'"></p>
+                                </div>
+                                <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+                                    <p class="text-xs text-slate-500 uppercase font-medium">Total Absent Days</p>
+                                    <p class="text-2xl font-bold text-red-600 mt-1" x-text="summary.total_absent_days + ' days'"></p>
+                                </div>
+                                <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+                                    <p class="text-xs text-slate-500 uppercase font-medium">Grace Period Days</p>
+                                    <p class="text-2xl font-bold text-green-600 mt-1" x-text="summary.grace_days + ' days'"></p>
+                                    <p class="text-xs text-slate-400">No deduction applied</p>
+                                </div>
+                                <div class="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-800 border-2 p-4">
+                                    <p class="text-xs text-slate-500 uppercase font-medium">Total Deduction</p>
+                                    <p class="text-2xl font-bold text-red-600 mt-1" x-text="'-₦' + Number(summary.total_deduction).toLocaleString()"></p>
+                                </div>
+                            </div>
+                            
+                            <!-- Breakdown Table -->
+                            <div class="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                                <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+                                    <h3 class="font-bold text-slate-900 dark:text-white">Daily Breakdown</h3>
+                                </div>
+                                
+                                <template x-if="records.length === 0">
+                                    <div class="p-12 text-center text-slate-500">
+                                        <i data-lucide="check-circle" class="w-12 h-12 mx-auto mb-4 text-green-400"></i>
+                                        <p class="font-medium">No deductions for this period</p>
+                                        <p class="text-sm">Employee has perfect attendance record</p>
+                                    </div>
+                                </template>
+                                
+                                <template x-if="records.length > 0">
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400">
+                                                <tr>
+                                                    <th class="px-6 py-3 text-left font-medium">Date</th>
+                                                    <th class="px-6 py-3 text-left font-medium">Day</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Type</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Expected</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Actual</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Late By</th>
+                                                    <th class="px-6 py-3 text-right font-medium">Deduction</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Status</th>
+                                                    <th class="px-6 py-3 text-center font-medium">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                                                <template x-for="rec in records" :key="rec.date">
+                                                    <tr :class="rec.is_reversed ? 'bg-green-50 dark:bg-green-900/10' : (rec.is_grace ? 'bg-yellow-50 dark:bg-yellow-900/10' : '')">
+                                                        <td class="px-6 py-4 font-medium text-slate-900 dark:text-white" x-text="rec.date_formatted"></td>
+                                                        <td class="px-6 py-4 text-slate-500" x-text="rec.day_name"></td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <span x-show="rec.status === 'absent'" class="px-2 py-1 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 rounded-full text-xs font-bold">ABSENT</span>
+                                                            <span x-show="rec.status === 'late'" class="px-2 py-1 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 rounded-full text-xs font-bold">LATE</span>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-center text-slate-500" x-text="rec.expected_time || '08:00 AM'"></td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <span x-show="rec.status === 'absent'" class="text-red-500 font-medium">—</span>
+                                                            <span x-show="rec.status !== 'absent'" x-text="rec.actual_time || '-'"></span>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <span x-show="rec.status === 'absent'" class="text-red-600 font-medium">Full Day</span>
+                                                            <span x-show="rec.status === 'late'" :class="rec.is_grace ? 'text-green-600' : 'text-amber-600'" class="font-medium" x-text="rec.late_minutes + ' mins'"></span>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-right font-bold" :class="rec.is_reversed ? 'text-green-600 line-through' : 'text-red-600'">
+                                                            <span x-show="rec.is_grace" class="text-green-600">₦0.00</span>
+                                                            <span x-show="!rec.is_grace && rec.deduction > 0" x-text="'-₦' + Number(rec.deduction).toLocaleString()"></span>
+                                                            <span x-show="!rec.is_grace && rec.deduction <= 0" class="text-slate-400">-</span>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <span x-show="rec.is_reversed" class="text-xs text-green-600 font-medium">EXCUSED</span>
+                                                            <span x-show="rec.is_grace && !rec.is_reversed" class="text-xs text-green-600 font-medium">GRACE</span>
+                                                            <span x-show="!rec.is_grace && !rec.is_reversed && rec.deduction > 0" class="text-xs text-red-500 font-medium">DEDUCTED</span>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <div class="flex items-center justify-center gap-1">
+                                                                <button @click="viewCalculation(rec)" class="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors" title="View Calculation">
+                                                                    <i data-lucide="calculator" class="w-4 h-4"></i>
+                                                                </button>
+                                                                <button x-show="!rec.is_reversed && rec.deduction > 0" @click="openReversalModal(rec)" class="p-1.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors" title="Reverse Deduction">
+                                                                    <i data-lucide="undo-2" class="w-4 h-4"></i>
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                            <tfoot class="bg-slate-100 dark:bg-slate-900 font-bold">
+                                                <tr>
+                                                    <td colspan="6" class="px-6 py-4 text-right text-slate-700 dark:text-slate-300">TOTAL DEDUCTION:</td>
+                                                    <td class="px-6 py-4 text-right text-red-700 dark:text-red-400 text-lg" x-text="'-₦' + Number(summary.total_deduction).toLocaleString()"></td>
+                                                    <td colspan="2" class="px-6 py-4"></td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <!-- Footer Note -->
+                            <div class="mt-6 p-4 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl text-sm text-amber-800 dark:text-amber-300">
+                                <p class="font-medium mb-1">Note:</p>
+                                <ul class="list-disc list-inside space-y-1 text-amber-700 dark:text-amber-400">
+                                    <li>Grace period of <strong x-text="selectedEmployee?.grace_period || 15"></strong> minutes applies - arrivals within this window are not deducted.</li>
+                                    <li>Daily rate is calculated as: Gross Salary ÷ Working Days in Month</li>
+                                    <li>Deductions marked as <span class="text-green-600 font-medium">EXCUSED</span> have been reversed by admin.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </template>
+                    
+                    <!-- Calculation Breakdown Modal -->
+                    <div x-show="showCalcModal" x-cloak 
+                         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+                         @keydown.escape.window="showCalcModal = false">
+                        <div @click.outside="showCalcModal = false" 
+                             class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                            <div class="bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-4 text-white">
+                                <h3 class="text-lg font-bold">Deduction Calculation</h3>
+                                <p class="text-blue-100 text-sm" x-text="calcDetails.date_formatted + ' • ' + calcDetails.status?.toUpperCase()"></p>
+                            </div>
+                            <div class="p-6 space-y-4">
+                                <div class="grid grid-cols-2 gap-3 text-sm">
+                                    <div class="text-slate-500">Gross Salary:</div>
+                                    <div class="font-bold text-right" x-text="'₦' + Number(selectedEmployee?.gross_salary || 0).toLocaleString()"></div>
+                                    
+                                    <div class="text-slate-500">Working Days:</div>
+                                    <div class="font-bold text-right" x-text="(selectedEmployee?.working_days || 22) + ' days'"></div>
+                                    
+                                    <div class="text-slate-500">Daily Rate:</div>
+                                    <div class="font-bold text-right" x-text="'₦' + Number(selectedEmployee?.daily_rate || 0).toLocaleString()"></div>
+                                </div>
+                                
+                                <hr class="border-slate-200 dark:border-slate-700"/>
+                                
+                                <!-- For Absent -->
+                                <template x-if="calcDetails.status === 'absent'">
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div class="text-slate-500">Days Absent:</div>
+                                        <div class="font-bold text-right">× 1 day</div>
+                                    </div>
+                                </template>
+                                
+                                <!-- For Late -->
+                                <template x-if="calcDetails.status === 'late'">
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div class="text-slate-500">Late Minutes:</div>
+                                        <div class="font-bold text-right" x-text="calcDetails.late_minutes + ' mins'"></div>
+                                        
+                                        <div class="text-slate-500">Grace Period:</div>
+                                        <div class="font-bold text-right" x-text="(selectedEmployee?.grace_period || 15) + ' mins'"></div>
+                                        
+                                        <div class="text-slate-500">Chargeable:</div>
+                                        <div class="font-bold text-right" x-text="Math.max(0, calcDetails.late_minutes - (selectedEmployee?.grace_period || 15)) + ' mins'"></div>
+                                        
+                                        <div class="text-slate-500">Hourly Rate:</div>
+                                        <div class="font-bold text-right" x-text="'₦' + Number((selectedEmployee?.daily_rate || 0) / 8).toLocaleString(undefined, {maximumFractionDigits: 2})"></div>
+                                    </div>
+                                </template>
+                                
+                                <hr class="border-slate-200 dark:border-slate-700"/>
+                                
+                                <div class="flex justify-between items-center py-2 bg-red-50 dark:bg-red-900/20 px-4 rounded-lg">
+                                    <span class="font-bold text-slate-700 dark:text-slate-300">TOTAL DEDUCTION:</span>
+                                    <span class="text-xl font-bold text-red-600" x-text="'-₦' + Number(calcDetails.deduction || 0).toLocaleString()"></span>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6">
+                                <button @click="showCalcModal = false" class="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Reversal Modal -->
+                    <div x-show="showReversalModal" x-cloak 
+                         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+                         @keydown.escape.window="showReversalModal = false">
+                        <div @click.outside="showReversalModal = false" 
+                             class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                            <div class="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4 text-white">
+                                <h3 class="text-lg font-bold">Reverse Deduction</h3>
+                                <p class="text-amber-100 text-sm">This will remove the deduction from payroll</p>
+                            </div>
+                            <div class="p-6 space-y-4">
+                                <div class="p-4 bg-slate-50 dark:bg-slate-800 rounded-lg">
+                                    <div class="flex justify-between mb-2">
+                                        <span class="text-slate-500">Employee:</span>
+                                        <span class="font-medium" x-text="selectedEmployee?.name"></span>
+                                    </div>
+                                    <div class="flex justify-between mb-2">
+                                        <span class="text-slate-500">Date:</span>
+                                        <span class="font-medium" x-text="reversalRecord?.date_formatted"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span class="text-slate-500">Amount:</span>
+                                        <span class="font-bold text-red-600" x-text="'-₦' + Number(reversalRecord?.deduction || 0).toLocaleString()"></span>
+                                    </div>
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Reason for Reversal <span class="text-red-500">*</span></label>
+                                    <textarea x-model="reversalReason" rows="3" 
+                                              class="w-full px-4 py-3 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg focus:ring-2 focus:ring-brand-500"
+                                              placeholder="e.g., Doctor's note provided, Approved leave application..."></textarea>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 flex gap-3">
+                                <button @click="showReversalModal = false" class="flex-1 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                                    Cancel
+                                </button>
+                                <button @click="confirmReversal()" :disabled="!reversalReason.trim() || reversalLoading" 
+                                        class="flex-1 py-2.5 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                    <span x-show="!reversalLoading">Confirm Reversal</span>
+                                    <span x-show="reversalLoading">Processing...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </main>
         </div>
 
@@ -1889,6 +3066,431 @@ $master_bonuses = [
 
     </script>
     <script>
+        // Notifications Panel Component
+        function notificationsPanel() {
+            return {
+                notifications: [],
+                loading: false,
+                
+                async fetchNotifications() {
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/notifications.php');
+                        const data = await res.json();
+                        if (data.status) {
+                            this.notifications = data.notifications || [];
+                        }
+                    } catch (e) {
+                        console.error('Notifications error:', e);
+                    } finally {
+                        this.loading = false;
+                        setTimeout(() => lucide.createIcons(), 100);
+                    }
+                },
+                
+                formatTime(timestamp) {
+                    if (!timestamp) return '';
+                    const date = new Date(timestamp);
+                    const now = new Date();
+                    const diff = Math.floor((now - date) / 1000);
+                    
+                    if (diff < 60) return 'Just now';
+                    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+                    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+                    if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+                    return date.toLocaleDateString('en-NG', { day: 'numeric', month: 'short' });
+                }
+            };
+        }
+    </script>
+    <script>
+        // Payslips View Component
+        function payslipsView() {
+            return {
+                loading: false,
+                payslips: [],
+                filteredPayslips: [],
+                
+                // Employee search
+                employeeSearch: '',
+                employeeResults: [],
+                showEmployeeList: false,
+                selectedEmployee: null,
+                
+                // Filters
+                filters: {
+                    department: '',
+                    periodFrom: '',
+                    periodTo: ''
+                },
+                sortBy: 'date_desc',
+                
+                init() {
+                    this.fetchPayslips();
+                    setTimeout(() => lucide.createIcons(), 100);
+                },
+                
+                async fetchPayslips() {
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/payroll_operations.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'get_payslips' })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.payslips = data.payslips || [];
+                            this.applyFilters();
+                        }
+                    } catch (e) {
+                        console.error('Fetch payslips error:', e);
+                    } finally {
+                        this.loading = false;
+                        setTimeout(() => lucide.createIcons(), 50);
+                    }
+                },
+                
+                async searchEmployees() {
+                    if (this.employeeSearch.length < 2) {
+                        this.employeeResults = [];
+                        return;
+                    }
+                    try {
+                        const res = await fetch('ajax/search_employees.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: this.employeeSearch })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.employeeResults = data.employees || [];
+                        }
+                    } catch (e) {
+                        console.error('Search error:', e);
+                    }
+                },
+                
+                selectEmployee(emp) {
+                    this.selectedEmployee = emp;
+                    this.employeeSearch = '';
+                    this.showEmployeeList = false;
+                    this.employeeResults = [];
+                    this.applyFilters();
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                clearEmployeeFilter() {
+                    this.selectedEmployee = null;
+                    this.employeeSearch = '';
+                    this.applyFilters();
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                setQuickPeriod(preset) {
+                    const now = new Date();
+                    const year = now.getFullYear();
+                    const month = String(now.getMonth() + 1).padStart(2, '0');
+                    
+                    switch(preset) {
+                        case 'current':
+                            this.filters.periodFrom = `${year}-${month}`;
+                            this.filters.periodTo = `${year}-${month}`;
+                            break;
+                        case 'last3':
+                            const d3 = new Date(now.setMonth(now.getMonth() - 2));
+                            this.filters.periodFrom = `${d3.getFullYear()}-${String(d3.getMonth() + 1).padStart(2, '0')}`;
+                            this.filters.periodTo = `${year}-${month}`;
+                            break;
+                        case 'last6':
+                            const d6 = new Date();
+                            d6.setMonth(d6.getMonth() - 5);
+                            this.filters.periodFrom = `${d6.getFullYear()}-${String(d6.getMonth() + 1).padStart(2, '0')}`;
+                            this.filters.periodTo = `${year}-${month}`;
+                            break;
+                        case 'year':
+                            this.filters.periodFrom = `${year}-01`;
+                            this.filters.periodTo = `${year}-12`;
+                            break;
+                    }
+                    this.applyFilters();
+                },
+                
+                clearFilters() {
+                    this.selectedEmployee = null;
+                    this.employeeSearch = '';
+                    this.filters = { department: '', periodFrom: '', periodTo: '' };
+                    this.applyFilters();
+                },
+                
+                applyFilters() {
+                    let result = [...this.payslips];
+                    
+                    // Filter by employee
+                    if (this.selectedEmployee) {
+                        result = result.filter(s => s.employee_id == this.selectedEmployee.id);
+                    }
+                    
+                    // Filter by department
+                    if (this.filters.department) {
+                        result = result.filter(s => s.department === this.filters.department);
+                    }
+                    
+                    // Filter by period range
+                    if (this.filters.periodFrom) {
+                        const from = this.filters.periodFrom.replace('-', '');
+                        result = result.filter(s => {
+                            const period = `${s.year}${String(s.month).padStart(2, '0')}`;
+                            return period >= from;
+                        });
+                    }
+                    if (this.filters.periodTo) {
+                        const to = this.filters.periodTo.replace('-', '');
+                        result = result.filter(s => {
+                            const period = `${s.year}${String(s.month).padStart(2, '0')}`;
+                            return period <= to;
+                        });
+                    }
+                    
+                    this.filteredPayslips = result;
+                    this.sortPayslips();
+                },
+                
+                sortPayslips() {
+                    switch(this.sortBy) {
+                        case 'date_desc':
+                            this.filteredPayslips.sort((a, b) => (b.year * 100 + b.month) - (a.year * 100 + a.month));
+                            break;
+                        case 'date_asc':
+                            this.filteredPayslips.sort((a, b) => (a.year * 100 + a.month) - (b.year * 100 + b.month));
+                            break;
+                        case 'name_asc':
+                            this.filteredPayslips.sort((a, b) => a.employee_name.localeCompare(b.employee_name));
+                            break;
+                        case 'amount_desc':
+                            this.filteredPayslips.sort((a, b) => parseFloat(b.net_pay) - parseFloat(a.net_pay));
+                            break;
+                    }
+                },
+                
+                formatCurrency(amt) {
+                    return '₦ ' + parseFloat(amt || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+                },
+                
+                viewPayslip(slip) {
+                    // Use parent component's payslip modal
+                    const parent = Alpine.$data(document.querySelector('[x-data]'));
+                    if (parent && parent.openPayslipModal) {
+                        parent.openPayslipModal(slip);
+                    } else {
+                        alert('Viewing payslip for ' + slip.employee_name);
+                    }
+                },
+                
+                downloadPayslip(slip) {
+                    alert('Download payslip for ' + slip.employee_name + ' - ' + slip.period);
+                },
+                
+                exportPayslipsList() {
+                    let csv = 'Period,Employee,Payroll ID,Department,Gross,Deductions,Net Pay,Status\n';
+                    this.filteredPayslips.forEach(s => {
+                        csv += `"${s.period}","${s.employee_name}","${s.payroll_id}","${s.department || ''}",${s.gross_salary},${s.total_deductions},${s.net_pay},"${s.status}"\n`;
+                    });
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'payslips_export.csv';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+            };
+        }
+    </script>
+    <script>
+        // Deductions View Component
+        function deductionsView() {
+            return {
+                selectedEmployeeId: '',
+                filterMonth: new Date().getMonth() + 1,
+                filterYear: new Date().getFullYear(),
+                selectedEmployee: null,
+                records: [],
+                summary: {
+                    total_late_minutes: 0,
+                    total_absent_days: 0,
+                    grace_days: 0,
+                    total_deduction: 0
+                },
+                loading: false,
+                
+                // Search properties
+                searchQuery: '',
+                searchResults: [],
+                searchLoading: false,
+                showResults: false,
+                highlightIndex: -1,
+                
+                // Modal properties
+                showCalcModal: false,
+                calcDetails: {},
+                showReversalModal: false,
+                reversalRecord: null,
+                reversalReason: '',
+                reversalLoading: false,
+                
+                init() {
+                    setTimeout(() => lucide.createIcons(), 100);
+                },
+                
+                async searchEmployees() {
+                    if (this.searchQuery.length < 1) {
+                        this.searchResults = [];
+                        return;
+                    }
+                    
+                    this.searchLoading = true;
+                    try {
+                        const res = await fetch('ajax/search_employees.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: this.searchQuery })
+                        });
+                        const data = await res.json();
+                        if (data.status) {
+                            this.searchResults = data.employees;
+                            this.highlightIndex = -1;
+                        }
+                    } catch (e) {
+                        console.error('Search error:', e);
+                    } finally {
+                        this.searchLoading = false;
+                        this.showResults = true;
+                    }
+                },
+                
+                selectEmployee(emp) {
+                    this.selectedEmployeeId = emp.id;
+                    this.searchQuery = emp.name + ' (' + emp.payroll_id + ')';
+                    this.showResults = false;
+                    this.searchResults = [];
+                    this.fetchBreakdown();
+                },
+                
+                clearSelection() {
+                    this.selectedEmployeeId = '';
+                    this.selectedEmployee = null;
+                    this.searchQuery = '';
+                    this.records = [];
+                    this.summary = { total_late_minutes: 0, total_absent_days: 0, grace_days: 0, total_deduction: 0 };
+                },
+                
+                highlightNext() {
+                    if (this.highlightIndex < this.searchResults.length - 1) {
+                        this.highlightIndex++;
+                    }
+                },
+                
+                highlightPrev() {
+                    if (this.highlightIndex > 0) {
+                        this.highlightIndex--;
+                    }
+                },
+                
+                selectHighlighted() {
+                    if (this.highlightIndex >= 0 && this.searchResults[this.highlightIndex]) {
+                        this.selectEmployee(this.searchResults[this.highlightIndex]);
+                    }
+                },
+                
+                async fetchBreakdown() {
+                    if (!this.selectedEmployeeId) {
+                        this.selectedEmployee = null;
+                        this.records = [];
+                        return;
+                    }
+                    
+                    this.loading = true;
+                    try {
+                        const res = await fetch('ajax/deduction_breakdown.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                employee_id: this.selectedEmployeeId,
+                                month: this.filterMonth,
+                                year: this.filterYear
+                            })
+                        });
+                        const data = await res.json();
+                        
+                        if (data.status) {
+                            this.selectedEmployee = data.employee;
+                            this.records = data.records;
+                            this.summary = data.summary;
+                            setTimeout(() => lucide.createIcons(), 50);
+                        } else {
+                            alert('Error: ' + data.message);
+                            this.selectedEmployee = null;
+                        }
+                    } catch (e) {
+                        alert('Error fetching breakdown: ' + e.message);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                
+                printReport() {
+                    window.print();
+                },
+                
+                viewCalculation(rec) {
+                    this.calcDetails = rec;
+                    this.showCalcModal = true;
+                    setTimeout(() => lucide.createIcons(), 50);
+                },
+                
+                openReversalModal(rec) {
+                    this.reversalRecord = rec;
+                    this.reversalReason = '';
+                    this.showReversalModal = true;
+                },
+                
+                async confirmReversal() {
+                    if (!this.reversalReason.trim()) {
+                        alert('Please provide a reason for reversal');
+                        return;
+                    }
+                    
+                    this.reversalLoading = true;
+                    try {
+                        const res = await fetch('ajax/reverse_deduction.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                record_date: this.reversalRecord.date,
+                                employee_id: this.selectedEmployeeId,
+                                reason: this.reversalReason
+                            })
+                        });
+                        const data = await res.json();
+                        
+                        if (data.status) {
+                            this.showReversalModal = false;
+                            // Refresh the breakdown
+                            await this.fetchBreakdown();
+                            alert('Deduction reversed successfully');
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (e) {
+                        alert('Error reversing deduction: ' + e.message);
+                    } finally {
+                        this.reversalLoading = false;
+                    }
+                }
+            };
+        }
+        
         // Start Alpine
         document.addEventListener('alpine:init', () => {
              // Any direct inits if needed

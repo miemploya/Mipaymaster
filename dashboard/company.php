@@ -707,18 +707,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // 3. UPDATE STATUTORY
     elseif ($tab === 'statutory') {
-        $enable_paye = isset($_POST['enable_paye']) ? 1 : 0;
-        $enable_pension = isset($_POST['enable_pension']) ? 1 : 0;
-        $enable_nhis = isset($_POST['enable_nhis']) ? 1 : 0;
-        $enable_nhf = isset($_POST['enable_nhf']) ? 1 : 0;
-        $pension_employer = floatval($_POST['pension_employer_perc']);
-        $pension_employee = floatval($_POST['pension_employee_perc']);
+        // FIX: Use !empty() instead of isset() because hidden fields send empty string when unchecked
+        $enable_paye = !empty($_POST['enable_paye']) ? 1 : 0;
+        $enable_pension = !empty($_POST['enable_pension']) ? 1 : 0;
+        $enable_nhis = !empty($_POST['enable_nhis']) ? 1 : 0;
+        $enable_nhf = !empty($_POST['enable_nhf']) ? 1 : 0;
+        $pension_employer = floatval($_POST['pension_employer_perc'] ?? 10);
+        $pension_employee = floatval($_POST['pension_employee_perc'] ?? 8);
         
         // Overtime Configuration (NEW)
-        $overtime_enabled = isset($_POST['overtime_enabled']) ? 1 : 0;
+        $overtime_enabled = !empty($_POST['overtime_enabled']) ? 1 : 0;
         $daily_work_hours = floatval($_POST['daily_work_hours'] ?? 8.0);
         $monthly_work_days = intval($_POST['monthly_work_days'] ?? 22);
         $overtime_rate = floatval($_POST['overtime_rate'] ?? 1.5);
+        
+        // Payroll Display Settings (NEW)
+        $show_lateness = !empty($_POST['show_lateness']) ? 1 : 0;
+        $show_loan = !empty($_POST['show_loan']) ? 1 : 0;
+        $show_bonus = !empty($_POST['show_bonus']) ? 1 : 0;
+        $show_deductions = !empty($_POST['show_deductions']) ? 1 : 0;
 
         try {
             // Check if settings exist first
@@ -731,15 +738,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("UPDATE statutory_settings SET 
                 enable_paye=?, enable_pension=?, enable_nhis=?, enable_nhf=?, 
                 pension_employer_perc=?, pension_employee_perc=?,
-                overtime_enabled=?, daily_work_hours=?, monthly_work_days=?, overtime_rate=?
+                overtime_enabled=?, daily_work_hours=?, monthly_work_days=?, overtime_rate=?,
+                show_lateness=?, show_loan=?, show_bonus=?, show_deductions=?
                 WHERE company_id=?");
             $stmt->execute([
                 $enable_paye, $enable_pension, $enable_nhis, $enable_nhf, 
                 $pension_employer, $pension_employee,
                 $overtime_enabled, $daily_work_hours, $monthly_work_days, $overtime_rate,
+                $show_lateness, $show_loan, $show_bonus, $show_deductions,
                 $company_id
             ]);
-            $success_msg = "Statutory settings updated.";
+            $_SESSION['flash_success'] = "Statutory settings updated.";
+            header("Location: company.php?tab=statutory");
+            exit;
         } catch (PDOException $e) { $error_msg = "Error updating settings: " . $e->getMessage(); }
     }
 
@@ -858,10 +869,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 6. UPDATE BEHAVIOUR
     elseif ($tab === 'behaviour') {
-        $prorate = isset($_POST['prorate_new_hires']) ? 1 : 0;
-        $email_payslips = isset($_POST['email_payslips']) ? 1 : 0;
-        $password_protect = isset($_POST['password_protect_payslips']) ? 1 : 0;
-        $overtime = isset($_POST['enable_overtime']) ? 1 : 0;
+        // NOTE: Hidden inputs send '' when false, 'on' when true
+        // Must check value === 'on', not just isset()
+        $prorate = ($_POST['prorate_new_hires'] ?? '') === 'on' ? 1 : 0;
+        $email_payslips = ($_POST['email_payslips'] ?? '') === 'on' ? 1 : 0;
+        $password_protect = ($_POST['password_protect_payslips'] ?? '') === 'on' ? 1 : 0;
+        
+        // Overtime Settings (Moved from Statutory)
+        $overtime_enabled = ($_POST['overtime_enabled'] ?? '') === 'on' ? 1 : 0;
+        $daily_work_hours = floatval($_POST['daily_work_hours'] ?? 8);
+        $monthly_work_days = intval($_POST['monthly_work_days'] ?? 22);
+        $overtime_rate = floatval($_POST['overtime_rate'] ?? 1.5);
+        
+        // Display Settings (Moved from Statutory)
+        $show_lateness = ($_POST['show_lateness'] ?? '') === 'on' ? 1 : 0;
+        $show_loan = ($_POST['show_loan'] ?? '') === 'on' ? 1 : 0;
+        $show_bonus = ($_POST['show_bonus'] ?? '') === 'on' ? 1 : 0;
+        $show_deductions = ($_POST['show_deductions'] ?? '') === 'on' ? 1 : 0;
 
         try {
             $check = $pdo->prepare("SELECT company_id FROM payroll_behaviours WHERE company_id = ?");
@@ -869,9 +893,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($check->rowCount() == 0) {
                  $pdo->prepare("INSERT INTO payroll_behaviours (company_id) VALUES (?)")->execute([$company_id]);
             }
-            $stmt = $pdo->prepare("UPDATE payroll_behaviours SET prorate_new_hires=?, email_payslips=?, password_protect_payslips=?, enable_overtime=? WHERE company_id=?");
-            $stmt->execute([$prorate, $email_payslips, $password_protect, $overtime, $company_id]);
-            $success_msg = "Behaviour settings updated.";
+            $stmt = $pdo->prepare("UPDATE payroll_behaviours SET 
+                prorate_new_hires=?, email_payslips=?, password_protect_payslips=?,
+                overtime_enabled=?, daily_work_hours=?, monthly_work_days=?, overtime_rate=?,
+                show_lateness=?, show_loan=?, show_bonus=?, show_deductions=?
+                WHERE company_id=?");
+            $stmt->execute([
+                $prorate, $email_payslips, $password_protect,
+                $overtime_enabled, $daily_work_hours, $monthly_work_days, $overtime_rate,
+                $show_lateness, $show_loan, $show_bonus, $show_deductions,
+                $company_id
+            ]);
+            $_SESSION['flash_success'] = "Behaviour settings updated.";
+            header("Location: company.php?tab=behaviour");
+            exit;
         } catch (PDOException $e) { $error_msg = "Error updating behaviours: " . $e->getMessage(); }
     }
 
@@ -991,7 +1026,9 @@ $statutory = [
     'enable_nhis'=>0, 'enable_nhf'=>0,
     // Overtime configuration
     'overtime_enabled'=>0, 'daily_work_hours'=>8.00, 
-    'monthly_work_days'=>22, 'overtime_rate'=>1.50
+    'monthly_work_days'=>22, 'overtime_rate'=>1.50,
+    // Payroll Display Settings (column visibility)
+    'show_lateness'=>1, 'show_loan'=>1, 'show_bonus'=>1, 'show_deductions'=>1
 ];
 try {
     $stmt = $pdo->prepare("SELECT * FROM statutory_settings WHERE company_id = ?");
@@ -1004,8 +1041,20 @@ try {
     }
 } catch (Exception $e) { /* ignore */ }
 
-// 3. Behaviours
-$behaviour = ['prorate_new_hires'=>1, 'email_payslips'=>0, 'password_protect_payslips'=>0, 'enable_overtime'=>0];
+// 3. Behaviours (includes Overtime and Display settings - moved from Statutory)
+$behaviour = [
+    'prorate_new_hires' => 1, 
+    'email_payslips' => 0, 
+    'password_protect_payslips' => 0,
+    'overtime_enabled' => 0,
+    'daily_work_hours' => 8.00,
+    'monthly_work_days' => 22,
+    'overtime_rate' => 1.50,
+    'show_lateness' => 1,
+    'show_loan' => 1,
+    'show_bonus' => 1,
+    'show_deductions' => 1
+];
 try {
     $stmt = $pdo->prepare("SELECT * FROM payroll_behaviours WHERE company_id = ?");
     $stmt->execute([$company_id]);
@@ -1362,12 +1411,27 @@ try {
                     overtime_enabled: <?php echo ($statutory['overtime_enabled'] ?? 0) ? 'true' : 'false'; ?>,
                     daily_work_hours: <?php echo $statutory['daily_work_hours'] ?? 8.00; ?>,
                     monthly_work_days: <?php echo $statutory['monthly_work_days'] ?? 22; ?>,
-                    overtime_rate: <?php echo $statutory['overtime_rate'] ?? 1.50; ?>
+                    overtime_rate: <?php echo $statutory['overtime_rate'] ?? 1.50; ?>,
+                    // Payroll Display Settings
+                    show_lateness: <?php echo ($statutory['show_lateness'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_loan: <?php echo ($statutory['show_loan'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_bonus: <?php echo ($statutory['show_bonus'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_deductions: <?php echo ($statutory['show_deductions'] ?? 1) ? 'true' : 'false'; ?>
                 },
                 behaviour: {
                     prorate: <?php echo $behaviour['prorate_new_hires'] ? 'true' : 'false'; ?>,
                     email: <?php echo $behaviour['email_payslips'] ? 'true' : 'false'; ?>,
-                    password: <?php echo $behaviour['password_protect_payslips'] ? 'true' : 'false'; ?>
+                    password: <?php echo $behaviour['password_protect_payslips'] ? 'true' : 'false'; ?>,
+                    // Overtime Settings (Moved from Statutory)
+                    overtime_enabled: <?php echo ($behaviour['overtime_enabled'] ?? 0) ? 'true' : 'false'; ?>,
+                    daily_work_hours: <?php echo floatval($behaviour['daily_work_hours'] ?? 8); ?>,
+                    monthly_work_days: <?php echo intval($behaviour['monthly_work_days'] ?? 22); ?>,
+                    overtime_rate: <?php echo floatval($behaviour['overtime_rate'] ?? 1.5); ?>,
+                    // Display Settings (Moved from Statutory)
+                    show_lateness: <?php echo ($behaviour['show_lateness'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_loan: <?php echo ($behaviour['show_loan'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_bonus: <?php echo ($behaviour['show_bonus'] ?? 1) ? 'true' : 'false'; ?>,
+                    show_deductions: <?php echo ($behaviour['show_deductions'] ?? 1) ? 'true' : 'false'; ?>
                 },
                 attendance: {
                     method: '<?php echo $attendance_policy['method']; ?>',
@@ -1391,8 +1455,9 @@ try {
                     },
                     // Automation
                     auto_absent_enabled: <?php echo $attendance_policy['auto_absent_enabled'] ? 'true' : 'false'; ?>,
+                    auto_absent_hours_after: <?php echo $attendance_policy['auto_absent_hours_after'] ?? 2; ?>,
                     auto_checkout_enabled: <?php echo $attendance_policy['auto_checkout_enabled'] ? 'true' : 'false'; ?>,
-                    auto_checkout_hours: <?php echo $attendance_policy['auto_checkout_hours_after']; ?>,
+                    auto_checkout_hours_after: <?php echo $attendance_policy['auto_checkout_hours_after'] ?? 3; ?>,
                     // Lateness
                     lateness_enabled: <?php echo $attendance_policy['lateness_deduction_enabled'] ? 'true' : 'false'; ?>,
                     lateness_type: '<?php echo $attendance_policy['lateness_deduction_type']; ?>',
@@ -1444,16 +1509,19 @@ try {
 
                     // FIX: Load Components and Set Defaults
                     this.salaryComponents = window.__SALARY_COMPONENTS__ || [];
-                    this.resetCatForm();
                     
                     // Initial Icon Load
                     setTimeout(() => lucide.createIcons(), 100);
 
-                    // Load isolated state
+                    // Load isolated state with deep clone to prevent reactivity issues
                     if (!this.componentsLoaded && window.__SALARY_COMPONENTS__) {
                         this.salaryComponents = JSON.parse(JSON.stringify(window.__SALARY_COMPONENTS__));
                         this.componentsLoaded = true;
                     }
+                    
+                    // CRITICAL: Reset cat form AFTER components are fully loaded
+                    // This ensures the breakdown defaults come from the salary structure
+                    this.resetCatForm();
                 },
 
                 // GETTERS (COMPUTED)
@@ -1535,6 +1603,8 @@ try {
                         if (data.success) {
                             this.salaryComponents = data.components;
                             window.__SALARY_COMPONENTS__ = data.components;
+                            // AUTO-SYNC: Update category form defaults when salary structure changes
+                            this.resetCatForm();
                             alert('✓ Salary structure saved successfully!');
                         } else {
                             alert('Error: ' + (data.error || 'Failed to save components'));
@@ -1636,6 +1706,8 @@ try {
                             this.newComponent = { name: '', method: 'fixed', amount: 0, percentage: 0, base: 'gross', taxable: true, custom: 0 };
                             // Clear search
                             this.compSearch = '';
+                            // AUTO-SYNC: Update category form when new allowance added
+                            this.resetCatForm();
                         } else {
                             alert('Error: ' + (data.error || 'Failed to add component'));
                         }
@@ -1787,25 +1859,33 @@ try {
                 },
                 resetCatForm() {
                     this.editMode = false;
-                    // Dynamic Defaults from System Components
-                    const getPerc = (type) => {
-                        const comp = this.salaryComponents.find(c => (c.type === type) || (type==='housing' && c.name.toLowerCase().includes('housing')) || (type==='transport' && c.name.toLowerCase().includes('transport')));
-                        return comp ? Number(comp.percentage) : 0;
-                    };
                     
-                    const basic = getPerc('basic') || 50;
-                    const housing = getPerc('system') || 30; // Fallback, though 'system' is broad. Better logic below.
+                    // Improved Lookup - Only use ACTIVE components with STRICT matching
+                    let b = 50, h = 30, t = 20, o = 0;
                     
-                    // Improved Lookup
-                    let b = 50, h = 30, t = 20;
-                    this.salaryComponents.forEach(c => {
-                        const n = c.name.toLowerCase();
-                        if(c.type === 'basic') b = Number(c.percentage);
-                        else if(n.includes('housing')) h = Number(c.percentage);
-                        else if(n.includes('transport')) t = Number(c.percentage);
+                    this.salaryComponents.filter(c => c.active).forEach(c => {
+                        const n = c.name.toLowerCase().trim();
+                        const perc = Number(c.percentage) || 0;
+                        
+                        if (c.type === 'basic') {
+                            b = perc;
+                        } else if (n === 'housing allowance' || (c.type === 'system' && n.includes('housing'))) {
+                            h = perc;
+                        } else if (n === 'transport allowance' || (c.type === 'system' && n === 'transport allowance')) {
+                            // Strict match: only "Transport Allowance", not "Fuel / Transport Card" etc.
+                            t = perc;
+                        } else if (c.type === 'allowance' && perc > 0) {
+                            // Sum all other active allowances into "other"
+                            o += perc;
+                        }
                     });
+                    
+                    // If no explicit other allowances, calculate remainder
+                    if (o === 0) {
+                        o = Math.max(0, 100 - (b + h + t));
+                    }
                      
-                    this.catForm = { id: null, title: '', amount: 0, basic: b, housing: h, transport: t, other: Math.max(0, 100 - (b+h+t)) };
+                    this.catForm = { id: null, title: '', amount: 0, basic: b, housing: h, transport: t, other: o };
                 },
                 saveCategory() {
                     const form = document.createElement('form');
@@ -1862,6 +1942,12 @@ try {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         body { font-family: 'Inter', sans-serif; }
         [x-cloak] { display: none !important; }
+        
+        /* Sidebar Transitions */
+        .sidebar-transition { transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out, transform 0.3s ease-in-out; }
+        
+        /* Toolbar transition */
+        #collapsed-toolbar { transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out; }
 
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -1871,8 +1957,8 @@ try {
         .form-label { @apply block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1; }
         .tab-active { @apply bg-slate-900 dark:bg-brand-600 text-white shadow-sm; }
         .tab-inactive { @apply bg-transparent text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800; }
-        .toolbar-hidden { display: none; }
-        .toolbar-visible { display: block; }
+        .toolbar-hidden { transform: translateY(-100%); opacity: 0; pointer-events: none; height: 0; padding: 0; border: none; }
+        .toolbar-visible { transform: translateY(0); opacity: 1; pointer-events: auto; height: auto; }
     </style>
 </head>
 <body class="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 transition-colors duration-300" x-data="companySetup()">
@@ -2058,8 +2144,8 @@ try {
                                                         <i data-lucide="calendar" class="w-5 h-5 text-indigo-500"></i>
                                                     </div>
                                                     <div>
-                                                        <h4 class="font-bold text-slate-900 dark:text-white">Daily Mode</h4>
-                                                        <p class="text-xs text-slate-500">Same schedule for all staff, set per day of week.</p>
+                                                        <h4 class="font-bold text-slate-900 dark:text-white">Daily Default Mode</h4>
+                                                        <p class="text-xs text-slate-500">Default schedule for employees not assigned to any shift.</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -2104,9 +2190,15 @@ try {
                                 <div x-show="attendance.default_mode === 'daily' || attendance.default_mode === 'both'" x-transition class="mb-8">
                                     <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
                                         <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
-                                            <i data-lucide="calendar-days" class="w-5 h-5 text-brand-500"></i> Per-Day Schedule (Daily Mode)
+                                            <i data-lucide="calendar-days" class="w-5 h-5 text-indigo-500"></i> Per-Day Schedule (Default Shift Mode)
                                         </h4>
-                                        <p class="text-sm text-slate-500 mb-6">Configure working hours for each day of the week.</p>
+                                        <p class="text-sm text-slate-500 mb-4">This schedule applies to <span class="font-bold text-indigo-600">all employees not assigned to a specific shift</span>. Configure working hours for each day of the week.</p>
+                                        <div class="mb-6 p-3 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg border border-indigo-200 dark:border-indigo-700">
+                                            <p class="text-xs text-indigo-700 dark:text-indigo-300 flex items-start gap-2">
+                                                <i data-lucide="info" class="w-4 h-4 mt-0.5 shrink-0"></i>
+                                                <span><strong>How it works:</strong> When you use "Shift Mode" or "Both", employees assigned to a shift use that shift's schedule. Employees <strong>not</strong> assigned to any shift automatically use this default schedule. In "Daily Mode", all employees use this schedule.</span>
+                                            </p>
+                                        </div>
                                         
                                         <div class="overflow-x-auto">
                                             <table class="w-full text-sm">
@@ -2163,35 +2255,7 @@ try {
                                     </div>
                                 </div>
                                 
-                                <!-- Automation Settings -->
-                                <div class="mb-8">
-                                    <div class="p-6 bg-sky-50 dark:bg-sky-900/10 rounded-xl border border-sky-200 dark:border-sky-800">
-                                        <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
-                                            <i data-lucide="bot" class="w-5 h-5 text-sky-500"></i> Automation Settings
-                                        </h4>
-                                        <div class="space-y-4">
-                                            <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-sky-400 transition-colors">
-                                                <div>
-                                                    <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto-Mark Absent</span>
-                                                    <span class="text-xs text-slate-500">Mark employees as absent if no check-in by end of day.</span>
-                                                </div>
-                                                <input type="checkbox" name="auto_absent_enabled" value="1" x-model="attendance.auto_absent_enabled" class="w-5 h-5 text-sky-600 rounded focus:ring-sky-500">
-                                            </label>
-                                            
-                                            <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-sky-400 transition-colors">
-                                                <div>
-                                                    <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto Check-Out</span>
-                                                    <span class="text-xs text-slate-500">Automatically close open check-ins after X hours.</span>
-                                                </div>
-                                                <div class="flex items-center gap-2">
-                                                    <input type="number" name="auto_checkout_hours_after" x-model="attendance.auto_checkout_hours" min="1" max="24" :disabled="!attendance.auto_checkout_enabled" class="form-input w-16 text-center text-sm disabled:opacity-50">
-                                                    <span class="text-xs text-slate-500">hrs</span>
-                                                    <input type="checkbox" name="auto_checkout_enabled" value="1" x-model="attendance.auto_checkout_enabled" class="w-5 h-5 text-sky-600 rounded focus:ring-sky-500">
-                                                </div>
-                                            </label>
-                                        </div>
-                                    </div>
-                                </div>
+                                <!-- REMOVED: Duplicate Automation Settings section - keeping only Attendance Automation section below -->
                                 
                                 <!-- Configuration Panels -->
                                 <div class="bg-white dark:bg-slate-950">
@@ -2201,42 +2265,8 @@ try {
                                     
                                     <div x-show="attendance.method === 'self'" x-transition class="space-y-6">
                                         <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
-                                            <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-brand-500"></i> Working Hours & Lateness</h4>
-                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                <div>
-                                                    <label class="form-label">Earliest Check-In</label>
-                                                    <input type="time" name="check_in_start" x-model="attendance.check_in_start" class="form-input">
-                                                </div>
-                                                <div>
-                                                    <label class="form-label">Calculated Late After</label>
-                                                    <input type="time" name="check_in_end" x-model="attendance.check_in_end" class="form-input">
-                                                    <p class="text-xs text-amber-600 mt-1">Check-ins after this time are marked "Late".</p>
-                                                </div>
-                                                 <div>
-                                                    <label class="form-label">Earliest Check-Out (Without Penalty)</label>
-                                                    <input type="time" name="check_out_start" x-model="attendance.check_out_start" class="form-input">
-                                                </div>
-                                                <div>
-                                                    <label class="form-label">Latest Check-Out</label>
-                                                    <input type="time" name="check_out_end" x-model="attendance.check_out_end" class="form-input">
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
-                                        <div class="p-6 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800">
                                             <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="shield-check" class="w-4 h-4 text-brand-500"></i> Validation & Controls</h4>
                                             <div class="space-y-4">
-                                                 <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-brand-500 transition-colors">
-                                                    <div>
-                                                        <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Grace Period</span>
-                                                        <span class="text-xs text-slate-500">Allow check-ins within X minutes of start without penalty.</span>
-                                                    </div>
-                                                    <div class="flex items-center gap-2">
-                                                        <input type="number" name="grace_period" x-model="attendance.grace" class="form-input w-20 text-center" min="0">
-                                                        <span class="text-xs text-slate-500">mins</span>
-                                                    </div>
-                                                </label>
-                                                
                                                 <label class="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-brand-500 transition-colors">
                                                     <div>
                                                         <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Log IP Address & Device Info</span>
@@ -2252,6 +2282,72 @@ try {
                                                     </div>
                                                     <input type="checkbox" name="require_supervisor" value="1" x-model="attendance.supervisor" class="w-5 h-5 text-brand-600 rounded focus:ring-brand-500">
                                                 </label>
+                                                
+                                                <div class="p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-700">
+                                                    <p class="text-xs text-indigo-700 dark:text-indigo-300 flex items-start gap-2">
+                                                        <i data-lucide="info" class="w-4 h-4 mt-0.5 shrink-0"></i>
+                                                        <span><strong>Note:</strong> Check-in/out times and grace periods are configured in the <strong>Per-Day Schedule</strong> above or in individual <strong>Shift schedules</strong> in Attendance → Shifts.</span>
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- AUTOMATION SETTINGS -->
+                                        <div class="p-6 bg-purple-50 dark:bg-purple-900/10 rounded-xl border border-purple-200 dark:border-purple-800">
+                                            <h4 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="bot" class="w-5 h-5 text-purple-500"></i> Attendance Automation</h4>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Configure auto-marking for employees who forget to clock in/out. Requires cron jobs to be running.</p>
+                                            
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                <!-- Auto Check-Out -->
+                                                <div class="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                    <div class="flex items-center justify-between mb-3">
+                                                        <div>
+                                                            <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto Check-Out</span>
+                                                            <span class="text-xs text-slate-500">Automatically close open sessions</span>
+                                                        </div>
+                                                        <input type="checkbox" name="auto_checkout_enabled" value="1" x-model="attendance.auto_checkout_enabled" class="w-5 h-5 text-purple-600 rounded focus:ring-purple-500">
+                                                    </div>
+                                                    <div x-show="attendance.auto_checkout_enabled" x-transition class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                                                        <label class="form-label text-xs">Hours after expected checkout</label>
+                                                        <select name="auto_checkout_hours_after" x-model="attendance.auto_checkout_hours_after" class="form-input mt-1">
+                                                            <option value="1">1 hour</option>
+                                                            <option value="2">2 hours</option>
+                                                            <option value="3">3 hours</option>
+                                                            <option value="4">4 hours</option>
+                                                            <option value="5">5 hours</option>
+                                                            <option value="6">6 hours</option>
+                                                        </select>
+                                                        <p class="text-[10px] text-slate-400 mt-1">System will auto-checkout employees this many hours after their scheduled checkout time.</p>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Auto Absent -->
+                                                <div class="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                    <div class="flex items-center justify-between mb-3">
+                                                        <div>
+                                                            <span class="block text-sm font-bold text-slate-700 dark:text-slate-200">Auto Mark Absent</span>
+                                                            <span class="text-xs text-slate-500">Mark employees who don't clock in</span>
+                                                        </div>
+                                                        <input type="checkbox" name="auto_absent_enabled" value="1" x-model="attendance.auto_absent_enabled" class="w-5 h-5 text-purple-600 rounded focus:ring-purple-500">
+                                                    </div>
+                                                    <div x-show="attendance.auto_absent_enabled" x-transition class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                                                        <label class="form-label text-xs">Hours after expected check-in</label>
+                                                        <select name="auto_absent_hours_after" x-model="attendance.auto_absent_hours_after" class="form-input mt-1">
+                                                            <option value="1">1 hour</option>
+                                                            <option value="2">2 hours</option>
+                                                            <option value="3">3 hours</option>
+                                                            <option value="4">4 hours</option>
+                                                        </select>
+                                                        <p class="text-[10px] text-slate-400 mt-1">System will mark absent if no check-in this many hours after scheduled start.</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="mt-4 p-3 bg-green-100 dark:bg-green-900/30 rounded-lg">
+                                                <p class="text-xs text-green-700 dark:text-green-300 flex items-start gap-2">
+                                                    <i data-lucide="check-circle" class="w-4 h-4 mt-0.5 shrink-0"></i>
+                                                    <span><strong>Ready!</strong> Automation runs automatically when administrators access the dashboard. No additional setup required.</span>
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
@@ -3184,7 +3280,7 @@ try {
                                         </div>
 
                                         <div class="pt-4 border-t border-slate-100 dark:border-slate-800">
-                                            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Breakdown Split (%)</h4>
+                                            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Breakdown Split (%) <span class="normal-case font-normal text-slate-400">(default from Salary Structure)</span></h4>
                                             <div class="grid grid-cols-2 gap-x-4 gap-y-3">
                                                 <div>
                                                     <label class="text-[10px] font-bold text-slate-400 uppercase">Basic</label>
@@ -3338,63 +3434,6 @@ try {
                                                 <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
                                             </label>
                                         </div>
-                                        </div>
-
-                                        <!-- OVERTIME SETTINGS (NEW) -->
-                                        <div class="p-6 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 rounded-xl border border-orange-200 dark:border-orange-800/30 group hover:border-orange-300 dark:hover:border-orange-500/30 transition-all mt-8">
-                                            <div class="flex items-center justify-between mb-6">
-                                                <div class="flex items-center gap-5">
-                                                    <div class="w-12 h-12 flex items-center justify-center bg-orange-100 dark:bg-orange-900/30 rounded-xl text-orange-600 dark:text-orange-400 group-hover:scale-110 transition-transform">
-                                                        <i data-lucide="clock" class="w-6 h-6"></i>
-                                                    </div>
-                                                    <div>
-                                                        <p class="font-bold text-slate-900 dark:text-white">Overtime Pay (Taxable)</p>
-                                                        <p class="text-xs text-slate-500">Enable overtime tracking for employees. Per PIT Act, overtime is taxable income.</p>
-                                                    </div>
-                                                </div>
-                                                <label class="relative inline-flex items-center cursor-pointer">
-                                                    <input type="checkbox" name="overtime_enabled_dummy" x-model="statutory.overtime_enabled" class="sr-only peer">
-                                                    <input type="hidden" name="overtime_enabled" :value="statutory.overtime_enabled ? 'on' : ''">
-                                                    <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-orange-500 font-bold"></div>
-                                                </label>
-                                            </div>
-                                            
-                                            <!-- Overtime Configuration (shown when enabled) -->
-                                            <div x-show="statutory.overtime_enabled" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 -translate-y-2" x-transition:enter-end="opacity-100 translate-y-0" class="grid grid-cols-3 gap-6 pl-16">
-                                                <div class="space-y-1.5">
-                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Daily Work Hours</label>
-                                                    <div class="relative">
-                                                        <input type="number" name="daily_work_hours" x-model="statutory.daily_work_hours" step="0.5" min="1" max="24" class="form-input pl-4 pr-12 py-2.5" placeholder="8.00">
-                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">hrs</span>
-                                                    </div>
-                                                </div>
-                                                <div class="space-y-1.5">
-                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Monthly Work Days</label>
-                                                    <div class="relative">
-                                                        <input type="number" name="monthly_work_days" x-model="statutory.monthly_work_days" step="1" min="1" max="31" class="form-input pl-4 pr-14 py-2.5" placeholder="22">
-                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">days</span>
-                                                    </div>
-                                                </div>
-                                                <div class="space-y-1.5">
-                                                    <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Overtime Rate</label>
-                                                    <div class="relative">
-                                                        <input type="number" name="overtime_rate" x-model="statutory.overtime_rate" step="0.1" min="1" max="5" class="form-input pl-4 pr-8 py-2.5" placeholder="1.5">
-                                                        <span class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">x</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            <!-- Info Note -->
-                                            <div x-show="statutory.overtime_enabled" class="mt-4 pl-16">
-                                                <div class="flex items-start gap-2 p-3 bg-amber-100/50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800/50">
-                                                    <i data-lucide="info" class="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"></i>
-                                                    <p class="text-xs text-amber-700 dark:text-amber-300">
-                                                        <strong>Hourly Rate Calculation:</strong> Gross Salary ÷ (Daily Hours × Monthly Days). 
-                                                        <br>Example: ₦200,000 ÷ (8 × 22) = ₦1,136.36/hr × 1.5 = ₦1,704.55 OT rate/hr
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
                                     </div>
 
                                     <div class="mt-10 pt-6 border-t border-slate-100 dark:border-slate-800 flex justify-end">
@@ -3409,7 +3448,6 @@ try {
 
                     <!-- TAB 7: BEHAVIOUR -->
                     <div x-show="currentTab === 'behaviour'" x-cloak>
-                        <div class="max-w-6xl mx-auto">
                             <div class="mb-8">
                                 <h2 class="text-xl font-bold text-slate-900 dark:text-white">Payroll Behaviour & Rules</h2>
                                 <p class="text-sm text-slate-500 mt-1">Configure global rules and automation for payroll processing.</p>
@@ -3466,35 +3504,122 @@ try {
                                         <h3 class="font-bold text-slate-900 dark:text-white mb-1">Password Protection</h3>
                                         <p class="text-xs text-slate-500 leading-relaxed">Secure PDF payslips. Employees will need to enter their Date of Birth (DDMMYYYY) to view the file.</p>
                                     </div>
-
-                                    <!-- Overtime (DEPRECATED - Use Statutory Tab) -->
-                                    <div class="p-6 bg-slate-100 dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 opacity-60">
+                                    <!-- OVERTIME PAY SETTINGS (Moved from Statutory) -->
+                                    <div class="p-6 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 rounded-2xl border border-orange-200 dark:border-orange-800/30 group hover:border-orange-300 dark:hover:border-orange-500/30 transition-all">
                                         <div class="flex items-center justify-between mb-4">
-                                            <div class="w-12 h-12 flex items-center justify-center bg-slate-200 dark:bg-slate-800 rounded-xl text-slate-400">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-orange-100 dark:bg-orange-900/30 rounded-xl text-orange-600 dark:text-orange-400 group-hover:scale-110 transition-transform">
                                                 <i data-lucide="clock" class="w-6 h-6"></i>
                                             </div>
-                                            <span class="text-xs font-bold text-slate-500 bg-slate-200 dark:bg-slate-700 px-2 py-1 rounded">MOVED</span>
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" name="overtime_enabled_dummy" x-model="behaviour.overtime_enabled" class="sr-only peer">
+                                                <input type="hidden" name="overtime_enabled" :value="behaviour.overtime_enabled ? 'on' : ''">
+                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-orange-500 font-bold"></div>
+                                            </label>
                                         </div>
-                                        <h3 class="font-bold text-slate-600 dark:text-slate-400 mb-1">Enable Overtime</h3>
-                                        <p class="text-xs text-slate-500 leading-relaxed">Overtime settings have been moved to the <a href="company.php?tab=statutory" class="text-brand-600 font-bold underline">Statutory Tab</a>. Configure overtime rate, daily hours, and monthly workdays there.</p>
+                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Overtime Pay (Taxable)</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed mb-4">Enable overtime tracking for employees. Per PIT Act, overtime is taxable income.</p>
+                                        
+                                        <!-- Overtime Config (shown when enabled) -->
+                                        <div x-show="behaviour.overtime_enabled" x-transition class="space-y-4 pt-4 border-t border-orange-200 dark:border-orange-800/30">
+                                            <div class="grid grid-cols-3 gap-4">
+                                                <div>
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase block mb-1">Daily Hours</label>
+                                                    <input type="number" name="daily_work_hours" x-model="behaviour.daily_work_hours" step="0.5" min="1" max="24" class="form-input w-full px-3 py-2 text-sm" placeholder="8">
+                                                </div>
+                                                <div>
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase block mb-1">Work Days/Month</label>
+                                                    <input type="number" name="monthly_work_days" x-model="behaviour.monthly_work_days" step="1" min="1" max="31" class="form-input w-full px-3 py-2 text-sm" placeholder="22">
+                                                </div>
+                                                <div>
+                                                    <label class="text-[11px] font-bold text-slate-500 uppercase block mb-1">OT Rate (x)</label>
+                                                    <input type="number" name="overtime_rate" x-model="behaviour.overtime_rate" step="0.1" min="1" max="5" class="form-input w-full px-3 py-2 text-sm" placeholder="1.5">
+                                                </div>
+                                            </div>
+                                            <div class="p-2 bg-amber-100/50 dark:bg-amber-900/20 rounded-lg text-xs text-amber-700 dark:text-amber-300">
+                                                <strong>Formula:</strong> Gross ÷ (Hours × Days) × Rate
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Lateness Column -->
+                                    <div class="p-6 bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 group hover:border-brand-300 dark:hover:border-brand-500/30 transition-all">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-amber-100 dark:bg-amber-900/30 rounded-xl text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform">
+                                                <i data-lucide="clock" class="w-6 h-6"></i>
+                                            </div>
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" name="show_lateness_dummy" x-model="behaviour.show_lateness" class="sr-only peer">
+                                                <input type="hidden" name="show_lateness" :value="behaviour.show_lateness ? 'on' : ''">
+                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
+                                            </label>
+                                        </div>
+                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Show Lateness</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed">Display the Lateness penalty column on the payroll sheet.</p>
+                                    </div>
+
+                                    <!-- Loan Column -->
+                                    <div class="p-6 bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 group hover:border-brand-300 dark:hover:border-brand-500/30 transition-all">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-red-100 dark:bg-red-900/30 rounded-xl text-red-600 dark:text-red-400 group-hover:scale-110 transition-transform">
+                                                <i data-lucide="banknote" class="w-6 h-6"></i>
+                                            </div>
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" name="show_loan_dummy" x-model="behaviour.show_loan" class="sr-only peer">
+                                                <input type="hidden" name="show_loan" :value="behaviour.show_loan ? 'on' : ''">
+                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
+                                            </label>
+                                        </div>
+                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Show Loans</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed">Display the Loan Repayment column on the payroll sheet.</p>
+                                    </div>
+
+                                    <!-- Bonus Column -->
+                                    <div class="p-6 bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 group hover:border-brand-300 dark:hover:border-brand-500/30 transition-all">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-green-100 dark:bg-green-900/30 rounded-xl text-green-600 dark:text-green-400 group-hover:scale-110 transition-transform">
+                                                <i data-lucide="gift" class="w-6 h-6"></i>
+                                            </div>
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" name="show_bonus_dummy" x-model="behaviour.show_bonus" class="sr-only peer">
+                                                <input type="hidden" name="show_bonus" :value="behaviour.show_bonus ? 'on' : ''">
+                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
+                                            </label>
+                                        </div>
+                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Show Bonuses</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed">Display the Bonus/Commission column on the payroll sheet.</p>
+                                    </div>
+
+                                    <!-- Deductions Column -->
+                                    <div class="p-6 bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 group hover:border-brand-300 dark:hover:border-brand-500/30 transition-all">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-rose-100 dark:bg-rose-900/30 rounded-xl text-rose-600 dark:text-rose-400 group-hover:scale-110 transition-transform">
+                                                <i data-lucide="minus-circle" class="w-6 h-6"></i>
+                                            </div>
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" name="show_deductions_dummy" x-model="behaviour.show_deductions" class="sr-only peer">
+                                                <input type="hidden" name="show_deductions" :value="behaviour.show_deductions ? 'on' : ''">
+                                                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-brand-600 font-bold"></div>
+                                            </label>
+                                        </div>
+                                        <h3 class="font-bold text-slate-900 dark:text-white mb-1">Show Deductions</h3>
+                                        <p class="text-xs text-slate-500 leading-relaxed">Display the Other Deductions column on the payroll sheet.</p>
                                     </div>
 
                                 </div>
+
+
                                 <div class="mt-10 flex justify-end">
                                     <button type="submit" class="px-8 py-3 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold shadow-lg shadow-brand-500/25 transition-all flex items-center gap-2">
                                         <i data-lucide="save" class="w-4 h-4"></i> Save Behaviours
                                     </button>
                                 </div>
                             </form>
-                        </div>
                     </div>
                     </div> <!-- End Tabbed Content Area -->
                 </div>
             </main>
         </div>
 
-    
-    </script>
     <?php include '../includes/dashboard_scripts.php'; ?>
 </body>
 </html>

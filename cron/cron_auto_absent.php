@@ -19,6 +19,7 @@ if (php_sapi_name() !== 'cli' && !defined('CRON_ALLOWED')) {
 }
 
 require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/shift_schedule_resolver.php';
 
 // Date configuration
 $today = date('Y-m-d');
@@ -88,8 +89,6 @@ try {
         
         foreach ($employees as $emp) {
             $employee_id = $emp['id'];
-            $attendance_mode = $emp['attendance_mode'] ?? $company['default_mode'] ?? 'daily';
-            $shift_id = $emp['shift_id'];
             
             // Check if employee has attendance record for today
             $stmt_check = $pdo->prepare("
@@ -104,24 +103,10 @@ try {
                 continue;
             }
             
-            // Check if today is a working day for this employee
-            $is_working_day = false;
+            // Use the central resolver to check if today is a working day
+            $schedule = resolve_employee_schedule($pdo, $employee_id, $today, $company_id);
             
-            if ($attendance_mode === 'shift' && $shift_id) {
-                // Check shift schedule
-                $stmt_shift = $pdo->prepare("
-                    SELECT is_working_day FROM attendance_shift_schedules
-                    WHERE shift_id = ? AND day_of_week = ?
-                ");
-                $stmt_shift->execute([$shift_id, $day_of_week]);
-                $shift_day = $stmt_shift->fetch();
-                $is_working_day = $shift_day ? (bool)$shift_day['is_working_day'] : false;
-            } else {
-                // Daily mode - use company policy
-                $is_working_day = $is_company_working_day;
-            }
-            
-            if (!$is_working_day) {
+            if (!$schedule['is_working_day']) {
                 // Not a working day for this employee, skip
                 continue;
             }

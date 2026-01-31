@@ -177,17 +177,30 @@ function calculate_paye($gross_annual, $pension_annual, $nhf_annual, $nhis_annua
  */
 /**
  * Run Payroll for Company - V2.1 (Locked & Increments)
+ * @param int $company_id Company ID
+ * @param int $month Payroll month (1-12)
+ * @param int $year Payroll year
+ * @param int $user_id User running payroll
+ * @param string $department Optional department filter (department name)
+ * @param mixed $category Optional salary category filter (category ID)
  */
-function run_monthly_payroll($company_id, $month, $year, $user_id) {
+function run_monthly_payroll($company_id, $month, $year, $user_id, $department = '', $category = '') {
     global $pdo;
 
     require_once __DIR__ . '/increment_manager.php';
     require_once __DIR__ . '/payroll_lock.php'; // For future use or validation if needed
+    require_once __DIR__ . '/month_reconciliation.php'; // Month-end attendance reconciliation
 
     $incManager = new IncrementManager($pdo);
 
-    // 1. Check if payroll already exists
-    $stmt = $pdo->prepare("SELECT id, status FROM payroll_runs WHERE company_id=? AND period_month=? AND period_year=?");
+    // 0. Run Month-End Attendance Reconciliation
+    // This fills in missing attendance records (absents) for the entire month
+    // before we calculate deductions. Respects company/employee start dates.
+    $reconciliation_summary = reconcile_month_attendance($pdo, $company_id, $month, $year);
+    error_log("Payroll: Month reconciliation complete - Created {$reconciliation_summary['absents_created']} absent records");
+
+    // 1. Check if REGULAR payroll already exists (supplementary runs are separate)
+    $stmt = $pdo->prepare("SELECT id, status FROM payroll_runs WHERE company_id=? AND period_month=? AND period_year=? AND (payroll_type = 'regular' OR payroll_type IS NULL)");
     $stmt->execute([$company_id, $month, $year]);
     $existing = $stmt->fetch();
 
@@ -238,19 +251,36 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
              return ['status' => false, 'message' => "Payroll for this period already exists and is " . $existing['status']];
         }
     } else {
-        // Create new
-        $stmt = $pdo->prepare("INSERT INTO payroll_runs (company_id, period_month, period_year, status) VALUES (?, ?, ?, 'draft')");
+        // Create new regular payroll run
+        $stmt = $pdo->prepare("INSERT INTO payroll_runs (company_id, period_month, period_year, payroll_type, status) VALUES (?, ?, ?, 'regular', 'draft')");
         $stmt->execute([$company_id, $month, $year]);
         $run_id = $pdo->lastInsertId();
     }
 
-    // 2. Fetch Active Employees & Gross
-    $stmt = $pdo->prepare("SELECT e.id, e.salary_category_id as category_id, e.department_id, sc.base_gross_amount 
-                           FROM employees e
-                           JOIN salary_categories sc ON e.salary_category_id = sc.id
-                           WHERE e.company_id = ? 
-                           AND LOWER(e.employment_status) IN ('active', 'full time', 'probation', 'contract')");
-    $stmt->execute([$company_id]);
+    // 2. Fetch Active Employees & Gross (with optional filters)
+    $sql = "SELECT e.id, e.salary_category_id as category_id, e.department_id, sc.base_gross_amount 
+            FROM employees e
+            JOIN salary_categories sc ON e.salary_category_id = sc.id
+            LEFT JOIN departments d ON e.department_id = d.id
+            WHERE e.company_id = ? 
+            AND LOWER(e.employment_status) IN ('active', 'full time', 'probation', 'contract')";
+    
+    $params = [$company_id];
+    
+    // Apply department filter
+    if (!empty($department)) {
+        $sql .= " AND d.name = ?";
+        $params[] = $department;
+    }
+    
+    // Apply salary category filter
+    if (!empty($category) && is_numeric($category)) {
+        $sql .= " AND e.salary_category_id = ?";
+        $params[] = intval($category);
+    }
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (!$employees) {
@@ -275,6 +305,18 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
     $settings = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$settings) {
         $settings = ['enable_paye'=>0, 'enable_pension'=>0, 'pension_employer_perc'=>0, 'pension_employee_perc'=>0, 'enable_nhis'=>0, 'enable_nhf'=>0];
+    }
+    
+    // 3b. Fetch Behaviour Settings for Overtime (moved from statutory)
+    $stmt_beh = $pdo->prepare("SELECT overtime_enabled, daily_work_hours, monthly_work_days, overtime_rate FROM payroll_behaviours WHERE company_id = ?");
+    $stmt_beh->execute([$company_id]);
+    $behaviour_settings = $stmt_beh->fetch(PDO::FETCH_ASSOC);
+    if ($behaviour_settings) {
+        // Merge into settings for backwards compatibility with engine logic
+        $settings['overtime_enabled'] = $behaviour_settings['overtime_enabled'];
+        $settings['daily_work_hours'] = $behaviour_settings['daily_work_hours'];
+        $settings['monthly_work_days'] = $behaviour_settings['monthly_work_days'];
+        $settings['overtime_rate'] = $behaviour_settings['overtime_rate'];
     }
 
     try {
@@ -475,12 +517,82 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
                     $overtime_hours = floatval($ot_record['overtime_hours']);
                     $overtime_notes = $ot_record['notes'] ?? '';
                     
-                    // Calculate overtime pay: hourly_rate * hours * overtime_rate
+                    // --- SHIFT-BASED HOURLY RATE CALCULATION ---
+                    // Check if employee is on shift mode and get their shift hours
+                    $stmt_shift = $pdo->prepare("
+                        SELECT eaa.attendance_mode, eaa.shift_id,
+                               s.name as shift_name, s.shift_type
+                        FROM employee_attendance_assignments eaa
+                        LEFT JOIN attendance_shifts s ON eaa.shift_id = s.id
+                        WHERE eaa.employee_id = ? AND eaa.is_active = 1
+                        ORDER BY eaa.effective_from DESC
+                        LIMIT 1
+                    ");
+                    $stmt_shift->execute([$emp['id']]);
+                    $assignment = $stmt_shift->fetch(PDO::FETCH_ASSOC);
+                    
                     $daily_hours = floatval($settings['daily_work_hours'] ?? 8.0);
                     $monthly_days = intval($settings['monthly_work_days'] ?? 22);
+                    
+                    if ($assignment && $assignment['attendance_mode'] === 'shift' && !empty($assignment['shift_id'])) {
+                        $shift_id = $assignment['shift_id'];
+                        $shift_type = $assignment['shift_type'] ?? 'fixed';
+                        
+                        if ($shift_type === 'fixed') {
+                            // Fixed: Calculate average from 7-day schedule
+                            $stmt_sched = $pdo->prepare("
+                                SELECT is_working_day, check_in_time, check_out_time
+                                FROM attendance_shift_schedules
+                                WHERE shift_id = ?
+                            ");
+                            $stmt_sched->execute([$shift_id]);
+                            $schedules = $stmt_sched->fetchAll(PDO::FETCH_ASSOC);
+                            
+                            $total_hours_sched = 0;
+                            $working_days_count = 0;
+                            
+                            foreach ($schedules as $sched) {
+                                if ($sched['is_working_day'] && $sched['check_in_time'] && $sched['check_out_time']) {
+                                    $working_days_count++;
+                                    $in = new DateTime($sched['check_in_time']);
+                                    $out = new DateTime($sched['check_out_time']);
+                                    if ($out < $in) $out->modify('+1 day');
+                                    $diff = $in->diff($out);
+                                    $total_hours_sched += $diff->h + ($diff->i / 60);
+                                }
+                            }
+                            
+                            if ($working_days_count > 0) {
+                                $daily_hours = round($total_hours_sched / $working_days_count, 2);
+                                $monthly_days = round($working_days_count * 4.33); // Approx monthly days
+                            }
+                        } else {
+                            // Rotational/Weekly/Monthly: Get from attendance_shift_daily_hours
+                            $stmt_h = $pdo->prepare("SELECT check_in_time, check_out_time FROM attendance_shift_daily_hours WHERE shift_id = ?");
+                            $stmt_h->execute([$shift_id]);
+                            $hours_row = $stmt_h->fetch(PDO::FETCH_ASSOC);
+                            
+                            if ($hours_row && $hours_row['check_in_time'] && $hours_row['check_out_time']) {
+                                $in = new DateTime($hours_row['check_in_time']);
+                                $out = new DateTime($hours_row['check_out_time']);
+                                if ($out < $in) $out->modify('+1 day');
+                                $diff = $in->diff($out);
+                                $daily_hours = round($diff->h + ($diff->i / 60), 2);
+                            }
+                            
+                            // Estimate monthly days
+                            if ($shift_type === 'rotational') $monthly_days = 15; // 24/24 pattern
+                            elseif ($shift_type === 'weekly' || $shift_type === 'monthly') $monthly_days = 11; // 1on/1off pattern
+                        }
+                    }
+                    
+
                     $ot_rate_multiplier = floatval($settings['overtime_rate'] ?? 1.5);
                     
-                    $hourly_rate = $adjusted_gross / ($daily_hours * $monthly_days);
+                    // Calculate hourly rate: Gross / (Daily Hours × Monthly Days)
+                    $hourly_rate = ($daily_hours > 0 && $monthly_days > 0) 
+                        ? $adjusted_gross / ($daily_hours * $monthly_days) 
+                        : 0;
                     $overtime_pay = $overtime_hours * $hourly_rate * $ot_rate_multiplier;
                 }
             }
@@ -505,9 +617,10 @@ function run_monthly_payroll($company_id, $month, $year, $user_id) {
             $net_pay = $adjusted_gross - $total_deductions;
 
             // --- ATTENDANCE DEDUCTION LOGIC ---
-            // Only sum deductions that have NOT been reversed (e.g., excused absences)
+            // Sum deductions: Use final_deduction_amount if set, otherwise fall back to auto_deduction_amount
+            // Only include non-reversed deductions
             $stmt_att = $pdo->prepare("
-                SELECT SUM(final_deduction_amount) 
+                SELECT SUM(COALESCE(final_deduction_amount, auto_deduction_amount, 0)) 
                 FROM attendance_logs 
                 WHERE employee_id = ? 
                   AND MONTH(date) = ? 
